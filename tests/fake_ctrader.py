@@ -126,7 +126,7 @@ def build_server(fake: FakeCTrader) -> MCPServer:
                            stopLoss: float | None = None, takeProfit: float | None = None,
                            baseSlippagePrice: float | None = None, slippageInPoints: int | None = None,
                            label: str | None = None, comment: str | None = None) -> dict:
-        fake.log("create_order", locals())
+        fake.log("create_order", {k: v for k, v in locals().items() if k != "fake"})
         name = fake.sym(symbolId)
         if "reject" in fake.mode:
             raise ToolError("INVALID_REQUEST: market closed")
