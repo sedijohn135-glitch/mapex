@@ -141,6 +141,8 @@ def build_server(fake: FakeCTrader) -> MCPServer:
         sl = None if relativeStopLoss is None or "no_sl" in fake.mode else fill - sgn * relativeStopLoss / 10**d
         tp = None if relativeTakeProfit is None else fill + sgn * relativeTakeProfit / 10**d
         vol = volume * 100 if "volume_x100" in fake.mode else volume
+        if "partial_fill" in fake.mode:
+            vol = volume // 2
         pid = None
         if "timeout_nofill" not in fake.mode:
             pid = next(fake.ids)

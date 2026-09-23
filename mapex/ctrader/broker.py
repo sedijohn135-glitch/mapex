@@ -118,6 +118,7 @@ class TradeManager:
         self.auth_ok = lambda: True
         self.skew = lambda: 0.0
         self.no_sl_alerted: set[str] = set()
+        self.lock = asyncio.Lock()  # one broker conversation at a time: execute / manage / reconcile / flat
 
     # ------------------------------------------------------------- helpers
     def _log(self, key: str, tool: str, req: dict, resp, t0: float, ok: bool) -> None:
@@ -163,7 +164,7 @@ class TradeManager:
             args["orderType"] = "MARKET"
         return args
 
-    async def execute(self, plan, quote) -> str:
+    async def _execute(self, plan, quote) -> str:
         now = self.clock()
         why = guards.check_entry(self.s, self.store, plan, quote, now, self.auth_ok(), self.skew())
         if why:
@@ -311,7 +312,7 @@ class TradeManager:
         self.store.outbox_add(f"entry:{key}", text)
 
     # ------------------------------------------------------------- management
-    async def manage(self, quotes: dict) -> None:
+    async def _manage(self, quotes: dict) -> None:
         trades = [t for t in guards.open_trades(self.store) if t["mode"] == self.venue.mode]
         if not trades:
             return
@@ -385,7 +386,7 @@ class TradeManager:
             self.store.outbox_add(f"exit:{key}", msg_exit(kind, result))
 
     # ------------------------------------------------------------- reconciliation / flat
-    async def reconcile(self) -> dict:
+    async def _reconcile(self) -> dict:
         """Start-up and every 30 s: DB trades <-> broker positions (label MAPEX only)."""
         out = {"adopted": 0, "orphans": 0, "closed": 0}
         positions = [p for p in await self.venue.positions() if p["label"] == LIVE_LABEL]
@@ -437,7 +438,7 @@ class TradeManager:
                                       critical=True)
         return out
 
-    async def flat(self) -> int:
+    async def _flat(self) -> int:
         n = 0
         for p in await self.venue.positions():
             if p["label"] != LIVE_LABEL:
@@ -446,3 +447,19 @@ class TradeManager:
                              p["position_id"], p["volume"])
             n += 1
         return n
+
+    async def execute(self, plan, quote) -> str:
+        async with self.lock:
+            return await self._execute(plan, quote)
+
+    async def manage(self, quotes: dict) -> None:
+        async with self.lock:
+            await self._manage(quotes)
+
+    async def reconcile(self) -> dict:
+        async with self.lock:
+            return await self._reconcile()
+
+    async def flat(self) -> int:
+        async with self.lock:
+            return await self._flat()

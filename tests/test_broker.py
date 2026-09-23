@@ -363,3 +363,24 @@ def test_paper_live_parity_and_paper_simulation():
     t = db.one("SELECT * FROM trades")
     assert t["state"] == "CLOSED" and t["result_r"] == pytest.approx(-1.0)
     assert "📝 PAPER" in db.one("SELECT text FROM outbox WHERE dedupe LIKE 'entry:%'")["text"]
+
+
+def test_partial_fill_is_a_volume_mismatch():
+    async def t():
+        fake = FakeCTrader()
+        fake.mode.add("partial_fill")
+        r = await Rig(fake).start()
+        return r, await r.tm.execute(plan(), QUOTE)
+
+    r, out = go(t())
+    assert out == "closed: volume mismatch" and r.fake.positions == {}
+    assert r.calls("close_position")[0]["volume"] == 500 and guards.kill_switch(r.db)
+
+
+def test_market_closed_blocks_before_any_call():
+    async def t():
+        r = await Rig(clock=[ny_ts(2026, 9, 19, 10, 0)]).start()  # Saturday
+        return r, await r.tm.execute(plan(), QUOTE)
+
+    r, out = go(t())
+    assert out.startswith("blocked") and "market_closed" in out and r.calls("create_order") == []

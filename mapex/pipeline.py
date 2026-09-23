@@ -38,12 +38,18 @@ def run_mapper(store: Store, s: Settings, symbol: str, bars: dict, price: float,
 
 
 def current_map(store: Store, symbol: str) -> tuple[dict | None, dict]:
-    row = store.one("SELECT id, json FROM maps WHERE symbol=? AND valid=1 ORDER BY id DESC LIMIT 1", (symbol,))
+    """Latest published (valid) map; the JSON is parsed once per map id."""
+    row = store.one("SELECT id FROM maps WHERE symbol=? AND valid=1 ORDER BY id DESC LIMIT 1", (symbol,))
     if row is None:
         return None, {}
-    data = json.loads(row["json"])
+    cache = store.__dict__.setdefault("map_cache", {})
+    hit = cache.get(symbol)
+    if hit and hit[0] == row["id"]:
+        return hit[1], hit[2]
+    data = json.loads(store.one("SELECT json FROM maps WHERE id=?", (row["id"],))["json"])
     meta = data["meta"]
     meta["map_id"] = row["id"]
+    cache[symbol] = (row["id"], data["map"], meta)
     return data["map"], meta
 
 
