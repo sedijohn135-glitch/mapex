@@ -122,3 +122,15 @@ def test_expired_token_alerts_once_and_trips_after_15_minutes(tmp_path):
     asyncio.run(app.heartbeat_tick())
     assert "tokeni" in guards.kill_switch(app.store)
     assert sum("TOKENI I CTRADER SKADOI" in r["text"] for r in app.store.all("SELECT text FROM outbox")) == 1
+
+
+def test_tracebacks_are_redacted_too():
+    f = RedactFilter(["123456:SECRETSECRET"])
+    try:
+        raise ConnectionError("POST https://api.telegram.org/bot123456:SECRETSECRET/sendMessage failed")
+    except ConnectionError:
+        import sys
+        rec = logging.LogRecord("x", logging.ERROR, "", 0, "send failed", (), sys.exc_info())
+    f.filter(rec)
+    out = logging.Formatter().format(rec)
+    assert "SECRETSECRET" not in out and "send failed" in out

@@ -50,6 +50,8 @@ class RedactFilter(logging.Filter):
         red = self.redact(msg)
         if red != msg:
             record.msg, record.args = red, ()
+        if record.exc_info and not record.exc_text:  # tracebacks may carry URLs with tokens
+            record.exc_text = self.redact(logging.Formatter().formatException(record.exc_info))
         return True
 
 
