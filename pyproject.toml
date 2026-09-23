@@ -1,0 +1,31 @@
+[project]
+name = "mapex"
+version = "1.0.0"
+description = "MAPEX: GEM1 HTF mapper + GEM2 LTF executor as deterministic code, trading through the cTrader Remote MCP"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "mcp==2.2.0",
+    "tzdata==2026.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.16.8",
+    "httpx==0.28.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E741"]
