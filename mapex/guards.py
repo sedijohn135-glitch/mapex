@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from mapex.config import Settings
-from mapex.core.timeutil import killzone, market_open, minutes_to_close, trading_day
+from mapex.core.timeutil import killzone, market_open, minutes_to_close, ny, trading_day
 from mapex.store import Store
 
 OPEN_STATES = ("SENDING", "OPEN", "PARTIAL", "BE", "CLOSING")
@@ -113,7 +113,8 @@ def record_result(s: Settings, store: Store, result_r: float | None, now: float)
 def daily_roll(store: Store, now: float) -> bool:
     """17:05 NY: reset the per-day counters (consecutive losses), write daily stats. Idempotent per day."""
     day = trading_day(now)
-    if store.get("last_roll") == day:
+    t = ny(now)
+    if store.get("last_roll") == day or (t.hour == 17 and t.minute < 5):
         return False
     prev = store.get("last_roll")
     if prev:

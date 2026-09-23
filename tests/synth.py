@@ -56,3 +56,18 @@ def market(days: int = 260, seed: int = 7, price: float = 60000.0, end: int = 1_
         if TF_SECONDS[tf] > step:
             out[tf] = aggregate(base, tf)
     return out
+
+
+def market_m1(days_m1: int = 36, days_total: int = 380, seed: int = 5, price: float = 60000.0,
+              end: int = 1_790_000_000, vol_m15: float = 0.0012, vol_m1: float = 0.0003) -> dict[str, list[Bar]]:
+    """M15 walk for the long history, then an M1 walk for the last `days_m1` days; higher TFs aggregated."""
+    end -= end % 86400
+    m1_start = end - days_m1 * 86400
+    n15 = (days_total - days_m1) * 96
+    old = walk(n15, m1_start - n15 * 900, "M15", price, vol_m15, seed)
+    m1 = walk(days_m1 * 1440, m1_start, "M1", old[-1].c, vol_m1, seed + 1)
+    m15 = old + aggregate(m1, "M15")
+    out = {"M1": m1, "M5": aggregate(m1, "M5"), "M15": m15}
+    for tf in ("H1", "H4", "D1", "W1", "MN1"):
+        out[tf] = aggregate(m15, tf)
+    return out
