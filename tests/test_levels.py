@@ -48,3 +48,11 @@ def test_completed_sessions_extremes():
 
 def test_sessions_between():
     assert lv.sessions_between(ny_ts(2026, 9, 22, 8), ny_ts(2026, 9, 23, 8)) == 3
+
+
+def test_constants_scale_with_price_for_both_symbols():
+    # A5: tolerances are percentages of price, never gold-era absolute units
+    assert lv.level_tol(2650.0, 0.0, 0.01) == 2650.0 * lv.TOUCH_TOL_PCT
+    assert lv.level_tol(60000.0, 0.0, 0.01) == 60000.0 * lv.TOUCH_TOL_PCT
+    assert len(lv.group_equal([(60000.0, 1), (60050.0, 2)], 60000)) == 1  # 50 < 0.1 % of 60000
+    assert len(lv.group_equal([(2650.0, 1), (2653.0, 2)], 2650)) == 2  # 3 > 0.1 % of 2650

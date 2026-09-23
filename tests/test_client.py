@@ -172,3 +172,18 @@ def test_quote_freshness_and_skew():
     assert q.fresh("XAUUSD", 1004) and q.fresh("XAUUSD", 1006) is None
     q.update({"XAUUSD": Quote(2650, 2650.2, 1040.0, 1000.0)})  # broker clock 40 s ahead
     assert q.fresh("XAUUSD", 1001) is None
+
+
+def test_every_timeframe_fetched_from_broker_never_aggregated():
+    fake = FakeCTrader()
+
+    async def go():
+        c = client_for(fake)
+        await c.calibrate("XAUUSD", [3], [1500, 14000])
+        cs = Candles(c)
+        for tf in ("MN1", "W1", "D1", "H4", "H1", "M15", "M5", "M1"):
+            await cs.refresh("XAUUSD", tf, 1_790_000_000)
+
+    run(go())
+    periods = {a["period"] for t, a in fake.calls if t == "get_trendbars"}
+    assert periods == {"MN_1", "W_1", "D_1", "H_4", "H_1", "M_15", "M_5", "M_1"}  # A3

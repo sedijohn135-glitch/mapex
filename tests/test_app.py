@@ -105,3 +105,20 @@ def test_live_app_with_fake_broker_calibrates_and_commands(tmp_path):
     assert "Konfirmo" in out[("/flat", "")] and "U mbyllën 0" in out[("/flat", "yes")]
     assert "Nuk ka hartë" in out[("/map", "XAUUSD")]
     assert "Tokeni u rinovua" in out["ctrader"] and tok("live") not in out["ctrader"]
+
+
+def test_expired_token_alerts_once_and_trips_after_15_minutes(tmp_path):
+    fake = FakeCTrader()
+    fake.auth_fail = True
+    clock = [NOW]
+    s = config.load({"DATA_DIR": str(tmp_path), "CTRADER_MCP_TOKEN": tok("demo"), "LOT_XAUUSD": "0.1"})
+    app = App(s, clock=lambda: clock[0], connector=connector_for(build_server(fake)))
+    asyncio.run(app.startup())
+    asyncio.run(app.heartbeat_tick())
+    texts = [r["text"] for r in app.store.all("SELECT text FROM outbox")]
+    assert sum("TOKENI I CTRADER SKADOI" in t for t in texts) == 1
+    assert guards.kill_switch(app.store) is None
+    clock[0] += 16 * 60
+    asyncio.run(app.heartbeat_tick())
+    assert "tokeni" in guards.kill_switch(app.store)
+    assert sum("TOKENI I CTRADER SKADOI" in r["text"] for r in app.store.all("SELECT text FROM outbox")) == 1
