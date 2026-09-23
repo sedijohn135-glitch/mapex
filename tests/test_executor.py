@@ -233,3 +233,44 @@ def test_state_roundtrip_in_sqlite():
     assert back.state == "RETURN" and back.sweep_count == 2 and back.ctx["fvg"]["ce"] == 1.5
     archive_missing(db, "XAUUSD", set())
     assert load_states(db, "XAUUSD") == {}
+
+
+def test_stale_zone_goes_to_monitor():
+    from mapex.executor.engine import ExecInput, evaluate
+    sc = build()
+    st = ZoneState(KEY, "XAUUSD", "CHAIN_A", "buy", first_seen=sc.start - 2 * 86400)
+    st.ctx["seen"] = {tf: sc.start for tf in ("M1", "M5", "M15")}
+    res = evaluate(ExecInput("XAUUSD", sc.start + 3, sc.map, sc.meta, True, sc.bars, 2650.0, 2650.2), {KEY: st})
+    assert res.decisions[0].output == "MONITOR" and res.decisions[0].reason == "stale_3_sessions_without_anchor"
+    assert res.states[KEY].thesis_status == "STALE"
+
+
+def test_no_displacement_print_resets():
+    tail = list(M1_TAIL)
+    tail[2] = (2, 2649.5, 2650.0, 2647.2, 2649.8)  # no FVG after the MSS bar
+    tail[3] = (3, 2649.8, 2650.0, 2649.5, 2649.9)
+    tail[4] = (4, 2649.9, 2650.1, 2649.7, 2650.0)
+    decisions, _, plans = run(build(tail=tail))
+    assert plans == [] and any(d.output == "RESET" and d.reason == "no_displacement_print" for d in decisions)
+
+
+def test_m15_contradiction_is_level2():
+    from mapex.core.primitives import Bar, atr_series
+    from mapex.executor.engine import m15_contradiction
+    rows = [(100, 101, 99, 100.5), (100.5, 101, 99.5, 100), (100, 100.8, 99.2, 100.4), (100.4, 100.6, 98.5, 98.8),
+            (98.8, 101.5, 98.7, 101.2), (101.2, 101.4, 100.2, 100.6)]
+    # bearish BOS with displacement after the raid
+    rows += [(100.6, 100.7, 94.0, 94.2), (94.2, 94.6, 93.0, 93.3), (93.3, 93.5, 92.0, 92.2)]
+    bars = [Bar(1000 + i * 900, *r) for i, r in enumerate(rows)]
+
+    class C:
+        def __init__(self):
+            self.bars = {"M15": bars}
+
+        def atrs(self, tf):
+            return atr_series(bars)
+
+    st = ZoneState(KEY, "XAUUSD", "CHAIN_A", "buy", ctx={"raid": {"t": bars[4].t}})
+    assert m15_contradiction(st, C(), len(bars) - 1, True)
+    st.ctx["raid"]["t"] = bars[-1].t
+    assert not m15_contradiction(st, C(), len(bars) - 1, True)

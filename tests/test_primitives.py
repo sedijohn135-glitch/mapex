@@ -122,3 +122,20 @@ def test_bpr_overlap():
     out = p.bprs(bars, [a, b])
     assert out and (out[0].low, out[0].high) == (11, 12)
     assert p.inside_bpr(p.Zone("FVG", "buy", 11.2, 11.8, 11.5, 0, 0), out)
+
+
+def test_propulsion_block_inside_displacement_leg():
+    bars = mk(BULL_DISP)
+    atrs = [1.0] * len(bars)
+    pbs = p.propulsion_blocks(bars, atrs)
+    assert any(z.idx == 6 and z.anchor == (98.2 + 104.0) / 2 for z in pbs)  # mean threshold = 50 % of the body
+
+
+def test_structure_direction_hh_hl():
+    rows = []
+    for i in range(40):  # rising zig-zag: higher highs and higher lows
+        b = i * 0.5 + (1.5 if i % 4 == 1 else 0) - (1.0 if i % 4 == 3 else 0)
+        rows.append((b, b + 0.6, b - 0.6, b + 0.2))
+    assert p.structure_direction(mk(rows)) == "bullish"
+    mirrored = [(100 - o, 100 - lo, 100 - h, 100 - c) for o, h, lo, c in rows]
+    assert p.structure_direction(mk(mirrored)) == "bearish"
