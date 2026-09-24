@@ -145,3 +145,20 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
   dropping idle sessions (repeated "Session termination failed: 404") and a shared session closed from another loop
   cancelling uvicorn (anyio cancel scopes belong to the task that opened them). The tools list is read once per
   token. The cost is one handshake per call, well inside the rate limits at MAPEX's call rate.
+- **D-65** Second round of Railway logs (per-call sessions live):
+  - **String timestamps.** `get_trendbars` rejected numeric `fromTimestamp`/`toTimestamp` ("expected string,
+    received number"), so no candles loaded and no map was built. Arguments now follow the live schema: a number the
+    schema declares as a string is sent as text, and a timestamp is sent as ISO 8601 UTC. It is sent as epoch-ms text
+    instead when the schema says milliseconds, or after the server refuses ISO once (reads only, remembered per
+    tool). Each timestamp schema is logged at start-up.
+  - **Lost sessions.** "Session not found; re-initialize" still came back on brand-new sessions. That is a JSON-RPC
+    answer to an unknown session id: the server rejects the request before any tool runs (MCP spec, HTTP 404). It
+    is resent on the same session up to 5 times, orders included, which cannot duplicate an order. A timeout is still
+    never resent, and reconciliation still adopts, or flags as orphan, any MAPEX position it did not expect.
+  - **No session DELETE on exit.** Every DELETE was answered 404.
+- **D-66** The owner offered cTrader Open API credentials (client id/secret, access/refresh token, account id) in case
+  the Remote MCP cannot do the job. Kept the Remote MCP: every failure seen on Railway had a concrete cause fixed in
+  D-64/D-65, and live quotes already flowed. Open API would replace the whole broker layer (protobuf or JSON over
+  TCP/WebSocket, token refresh, event stream) and bring new failure modes. It becomes the plan only if candles or
+  orders still fail after D-65, as a second connection behind the same `CTraderClient` interface, selected by
+  Railway variables. The secrets would then go only into Railway, never into chat or code.

@@ -226,19 +226,67 @@ def test_every_timeframe_fetched_from_broker_never_aggregated():
     assert periods == {"MN_1", "W_1", "D_1", "H_4", "H_1", "M_15", "M_5", "M_1"}  # A3
 
 
-def test_lost_session_is_reinitialised_and_retried():
+def test_lost_session_is_resent_on_the_same_session(monkeypatch):
+    monkeypatch.setattr("mapex.ctrader.client.BACKOFF_S", 0)
     fake = FakeCTrader()
     fake.fail_symbol[101] = 4  # four "Session not found" answers in a row, then fine
+    inner = connector_for(build_server(fake))
+    opened = []
+
+    def connect(url, token):
+        opened.append(1)
+        return inner(url, token)
 
     async def go():
-        c = client_for(fake)
+        c = CTraderClient("https://fake/trading/mcp", "tok.en.x", connector=connect)
         return await c.calibrate("BTCUSD", [2], [25000, 240000])
 
     assert run(go()) == 2
+    assert len(opened) == 2  # get_symbols + get_spot_prices: the four rejections never opened a new session
 
 
-def test_each_call_opens_its_own_session_in_its_own_task():
+def test_order_rejected_for_a_lost_session_is_resent_and_filled_once(monkeypatch):
+    """The server answers "Session not found" before any tool runs (MCP spec 404): resending cannot duplicate."""
+    monkeypatch.setattr("mapex.ctrader.client.BACKOFF_S", 0)
+    fake = FakeCTrader()
+
+    async def go():
+        c = client_for(fake)
+        await c.load_symbols()
+        fake.session_drops = 2
+        await c.call("create_order", {"symbolId": 41, "orderType": "MARKET", "tradeSide": "BUY", "volume": 100})
+
+    run(go())
+    assert len(fake.positions) == 1 and [t for t, _ in fake.calls].count("create_order") == 1
+
+
+def test_string_timestamps_follow_the_live_schema(monkeypatch):
+    """Railway log: get_trendbars rejected numeric timestamps ("expected string, received number")."""
+    start = 1_789_000_000 // 3600 * 3600
+    for fmt in ("iso", "ms"):
+        fake = FakeCTrader()
+        fake.ts_format = fmt
+        fake.bars[("XAUUSD", "H1")] = [(start + i * 3600, 2600, 2601, 2599, 2600.5) for i in range(10)]
+
+        async def go(fake=fake):
+            c = client_for(fake)
+            await c.calibrate("XAUUSD", [3], [1500, 14000])
+            first = await c.trendbars("XAUUSD", "H1", start, start + 10 * 3600)
+            await c.trendbars("XAUUSD", "H1", start, start + 10 * 3600)
+            return first
+
+        assert len(run(go())) == 10
+        sent = [a["fromTimestamp"] for t, a in fake.calls if t == "get_trendbars"]
+        assert all(isinstance(x, str) for x in sent)
+        if fmt == "iso":
+            assert sent == ["2026-09-10T00:00:00Z"] * 2
+        else:  # ISO refused once, then epoch-ms text from then on
+            assert sent[0].endswith("Z") and sent[1:] == [str(start * 1000)] * 2
+
+
+def test_each_call_opens_its_own_session_in_its_own_task(monkeypatch):
     """Railway log: a session opened by one loop and closed by another cancelled uvicorn (D-64)."""
+    monkeypatch.setattr("mapex.ctrader.client.BACKOFF_S", 0)
     fake = FakeCTrader()
     fake.fail_symbol[101] = 2
     inner = connector_for(build_server(fake))
@@ -256,10 +304,10 @@ def test_each_call_opens_its_own_session_in_its_own_task():
 
     digits, tasks = run(go())
     assert digits == [2, 3] and set(opened) == set(tasks)
-    assert len(opened) == len(fake.calls)  # one session per call (tools are listed inside the first ones)
+    assert len(opened) == 4  # get_symbols + get_spot_prices per task; lost-session answers reuse the session
 
 
-def test_mutation_session_error_is_never_resent():
+def test_order_session_error_inside_a_tool_result_is_never_resent():
     fake = FakeCTrader()
     fake.fail_once["create_order"] = "Session not found; re-initialize"
 

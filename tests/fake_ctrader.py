@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+from datetime import datetime
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
 
 SYMBOLS = {"XAUUSD": (41, 3), "BTCUSD": (101, 2)}
 PERIODS = {"M_1", "M_5", "M_15", "M_30", "H_1", "H_4", "D_1", "W_1", "MN_1"}
@@ -33,6 +35,8 @@ class FakeCTrader:
         self.points_digits: dict[str, int] = {}  # how the server reads relative SL/TP points (default: digits)
         self.fail_once: dict[str, str] = {}
         self.fail_symbol: dict[int, int] = {}  # symbolId -> number of spot calls answered "Session not found"
+        self.session_drops = 0  # the next N requests (any tool) are rejected with "Session not found", unexecuted
+        self.ts_format: str | None = None  # None: numeric timestamps; "iso" | "ms": string timestamps (live server)
 
     # ------------------------------------------------------------ helpers
     def sym(self, sid: int) -> str:
@@ -49,11 +53,24 @@ class FakeCTrader:
         return round(price, 2)
 
     def log(self, tool: str, args: dict):
+        if self.session_drops > 0:
+            self.session_drops -= 1
+            raise lost_session()
         self.calls.append((tool, {k: v for k, v in args.items() if v is not None}))
         if self.auth_fail:
             raise ToolError("401 Unauthorized: token expired")
         if tool in self.fail_once:
             raise ToolError(self.fail_once.pop(tool))
+
+    def parse_ts(self, text: str) -> int:
+        if self.ts_format == "ms":
+            if not text.isdigit():
+                raise ToolError("Input validation error: fromTimestamp/toTimestamp: expected epoch milliseconds")
+            return int(text)
+        try:
+            return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+        except ValueError:
+            raise ToolError("Input validation error: fromTimestamp/toTimestamp: invalid ISO datetime") from None
 
     def scale(self, name: str, encoding: str):
         return {"pipettes": 10 ** SYMBOLS[name][1], "display": 1, "e5": 10**5, "pip2": 100}[encoding]
@@ -107,7 +124,7 @@ def build_server(fake: FakeCTrader) -> MCPServer:
         for sid in symbolId:
             if fake.fail_symbol.get(sid, 0) > 0:
                 fake.fail_symbol[sid] -= 1
-                raise ToolError("Session not found; re-initialize")
+                raise lost_session()
         known = {sid: n for n, (sid, _) in SYMBOLS.items()}
         if any(s not in known for s in symbolId):
             return {"prices": []}  # Q-R8 batch poisoning
@@ -119,10 +136,20 @@ def build_server(fake: FakeCTrader) -> MCPServer:
                         "ask": fake.raw(n, ask, fake.spot_encoding), "timestamp": ts or fake.now_ms})
         return {"prices": out}
 
-    @srv.tool()
-    def get_trendbars(symbolId: int, period: str, fromTimestamp: int, toTimestamp: int) -> dict:
-        fake.log("get_trendbars", {"symbolId": symbolId, "period": period, "fromTimestamp": fromTimestamp,
-                                   "toTimestamp": toTimestamp})
+    if fake.ts_format:
+        @srv.tool(name="get_trendbars")
+        def get_trendbars_text(symbolId: int, period: str, fromTimestamp: str, toTimestamp: str) -> dict:
+            fake.log("get_trendbars", {"symbolId": symbolId, "period": period, "fromTimestamp": fromTimestamp,
+                                       "toTimestamp": toTimestamp})
+            return trendbars(symbolId, period, fake.parse_ts(fromTimestamp), fake.parse_ts(toTimestamp))
+    else:
+        @srv.tool()
+        def get_trendbars(symbolId: int, period: str, fromTimestamp: int, toTimestamp: int) -> dict:
+            fake.log("get_trendbars", {"symbolId": symbolId, "period": period, "fromTimestamp": fromTimestamp,
+                                       "toTimestamp": toTimestamp})
+            return trendbars(symbolId, period, fromTimestamp, toTimestamp)
+
+    def trendbars(symbolId: int, period: str, fromTimestamp: int, toTimestamp: int) -> dict:
         if period not in PERIODS:
             raise ToolError("Input validation error: period")
         if toTimestamp - fromTimestamp > 720 * 3600 * 1000:
@@ -210,6 +237,10 @@ def build_server(fake: FakeCTrader) -> MCPServer:
         return {"deals": list(fake.deals), "hasMore": False}
 
     return srv
+
+
+def lost_session() -> MCPError:
+    return MCPError(-32001, "Session not found; re-initialize")
 
 
 def connector_for(server):
