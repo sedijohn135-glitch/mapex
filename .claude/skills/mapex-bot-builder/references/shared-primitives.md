@@ -30,7 +30,7 @@ Convert to percentages of current price so the same code works for BTCUSD:
   Classic FX SB 03:00–04:00. Macro windows: `[HH:50, HH+1:10]`, last hour 15:00–16:00.
 - The owner's full ICT clock (ICT Sniper V13, D-72), for Gemini's mapping context only (entries stay in the GEM2
   killzones above). The code copy is `mapex/mcp_api.py::ICT_TIMES`; `market_snapshot` returns `ict_now` / `ict_next`.
-  The same table is in `docs/gemini/GEM1_SPARK_SKILL.md` §5, so change all three together:
+  The same table is in `docs/gemini/GEM_INSTRUCTIONS.md` §5, so change all three together:
   - Asian Range 19:00–00:00 (M5 only) · London Opening Range 01:30–02:00 · London Open KZ 02:00–05:00 · London
     Silver Bullet 03:00–04:00 · European Open ref 06:00 · 6:30 ref · NY Opening Range 07:00–07:30 · NY Open KZ
     07:00–10:00 (Judas 09:30–10:00) · Equities OR 09:30–10:00 · London Close 10:00–12:00 · AM Silver Bullet
