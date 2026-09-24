@@ -112,6 +112,8 @@ class App:
         if self.store.get("ctrader_backend") != backend:  # relative-points scales learned on another backend
             self.store.execute("DELETE FROM kv WHERE k LIKE 'points_digits:%'")
             self.store.put("ctrader_backend", backend)
+        if s.map_source == "gemini":  # D-71: a built-in map must not keep trading after the switch to Gemini maps
+            self.store.execute("UPDATE maps SET valid=0 WHERE valid=1 AND COALESCE(reason, '') != 'gemini'")
         if s.openapi:  # D-69: demo/live comes from the account itself once connected
             self.cred_source = "openapi"
             self.client = OpenApiClient(s.ctrader_client_id, s.ctrader_client_secret, s.ctrader_access_token,

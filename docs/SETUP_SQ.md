@@ -98,7 +98,8 @@ Në çdo hap: `/replay XAUUSD 30` të tregon sa tregti do të kishte hapur siste
      Nëse Gemini thotë që teksti është shumë i gjatë: ngjit te Instructions vetëm pjesën para
      `# GEM1 PROMPT (law)`, dhe `docs/source/GEM1.md` ngarkoje te **Knowledge** si skedar.
    - **Save**. Hap Gem-in dhe sigurohu që konektori MAPEX është aktiv.
-6. Te Gem-i shkruaj: **MAP XAUUSD**. Gemini thërret `market_snapshot`, `market_candles`, pastaj `submit_gem1_map`.
+6. Te Gem-i shkruaj: **@Mapex MAP XAUUSD** (zgjidh Mapex nga lista që del kur shkruan @; pa @Mapex Gemini nuk e
+   lidh konektorin). Gemini thërret `gem1_inputs`, pastaj `submit_gem1_map`, pa kërkuar Allow.
    Në Telegram `/status` duhet të tregojë `XAUUSD: harta Gemini HH:MM NY · bias …`.
 7. Orari (nëse Gemini lejon veprime të planifikuara), çdo ditë pune: **07:30**, **14:00**, **19:30** ora e Tiranës
    (para London, New York dhe PM Silver Bullet).

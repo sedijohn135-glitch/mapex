@@ -12,7 +12,9 @@ import logging
 from urllib.parse import parse_qs
 
 from mcp.server.mcpserver import MCPServer
-from starlette.responses import JSONResponse
+from mcp.types import ToolAnnotations
+from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse, Response
 
 from mapex import gemini_map
 from mapex.core import levels as lv
@@ -23,8 +25,19 @@ from mapex.guards import kill_switch, open_trades
 from mapex.pipeline import current_map, save_map
 
 log = logging.getLogger("mapex.mcp")
+# Gemini asks the owner to tap "Allow" for every tool it sees as a write. The owner asked for no tap (D-74), so, as in
+# the owner's Live Validator, every tool is advertised read-only, submit_gem1_map included: it only replaces the map
+# the executor watches, never places or touches an order, and sending the same map twice changes nothing.
+READ = ToolAnnotations(read_only_hint=True, open_world_hint=False, idempotent_hint=True)
+GEMINI_ORIGINS = ["https://gemini.google.com", "https://gemini.googleusercontent.com"]
+GEMINI_ORIGIN_RE = r"^https://([a-z0-9-]+\.)*gemini\.google(\.com)?$"
+NO_STORE = [(b"cache-control", b"no-store, no-cache, must-revalidate, max-age=0"), (b"pragma", b"no-cache"),
+            (b"expires", b"0"), (b"surrogate-control", b"no-store"), (b"x-content-type-options", b"nosniff"),
+            (b"vary", b"Accept, Origin"), (b"connection", b"close")]
 TFS = ("M1", "M5", "M15", "H1", "H4", "D1", "W1", "MN1")
 MAX_CANDLES = 500
+GEM1_INPUTS = (("D1", 200), ("H4", 300), ("H1", 300), ("M15", 200))  # what one GEM1 run reads, in one call
+COLUMNS = ["time_ny", "open", "high", "low", "close"]
 # The owner's ICT clock, New York time (ICT Sniper V13 §3.2 kill zones, §3.3 macros = stated time ±10 min, §5.5
 # Silver Bullets). Context for Gemini only: MAPEX itself enters only inside the GEM2 kill zones (mapex_entry_window).
 ICT_TIMES = (
@@ -59,8 +72,8 @@ ICT_TIMES = (
 )
 INSTRUCTIONS = (
     "MAPEX is the owner's GEM2 executor on IC Markets cTrader. You are the GEM1 strategist: read prices only from "
-    "market_snapshot and market_candles (times are New York), build the GEM1 map, send it with submit_gem1_map and "
-    "fix whatever it reports. MAPEX then watches the zones and trades only when GEM2 scores 100."
+    "gem1_inputs (or mapex_snapshot / mapex_candles; times are New York), build the GEM1 map, send it with "
+    "submit_gem1_map and fix whatever it reports. MAPEX then watches the zones and trades only when GEM2 scores 100."
 )
 
 
@@ -84,7 +97,12 @@ def ict_clock(symbol: str, now: float) -> dict:
 
 
 class TokenGate:
-    """ASGI guard for /mcp: 503 while MCP_TOKEN is unset, 401 for a wrong or missing key."""
+    """ASGI guard for /mcp: 503 while MCP_TOKEN is unset, 401 for a wrong or missing key.
+
+    Gemini in a browser (the owner uses Brave) calls /mcp cross-origin: preflights (OPTIONS, no body) pass without the
+    key (a bare one gets 204 here, one with an Origin goes to the CORS layer), and every answer is marked no-store so
+    Brave does not keep showing "Working on it..." after the tool returned (the Live Validator's fix).
+    """
 
     def __init__(self, app, token: str):
         self.app, self.token = app, token
@@ -98,12 +116,28 @@ class TokenGate:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and scope["path"].startswith("/mcp"):
+            if scope.get("method") == "OPTIONS":
+                if not any(k == b"origin" for k, _ in scope.get("headers", [])):
+                    await Response(status_code=204, headers={"allow": "GET, POST, OPTIONS, DELETE"})(
+                        scope, receive, send)
+                    return
+                await self.app(scope, receive, send)
+                return
             if not self.token:
                 await JSONResponse({"error": "MCP_TOKEN is not set on Railway"}, 503)(scope, receive, send)
                 return
             if not self.allowed(scope):
                 await JSONResponse({"error": "unauthorized"}, 401)(scope, receive, send)
                 return
+
+            async def no_store(message):
+                if message["type"] == "http.response.start":
+                    names = {k for k, _ in NO_STORE}
+                    message["headers"] = [h for h in message.get("headers", []) if h[0].lower() not in names] + NO_STORE
+                await send(message)
+
+            await self.app(scope, receive, no_store)
+            return
         await self.app(scope, receive, send)
 
 
@@ -111,8 +145,9 @@ def build(app):
     """The service's ASGI app: /mcp (token) + /health and / (public)."""
     server = MCPServer("mapex", instructions=INSTRUCTIONS)
 
-    def symbol_of(symbol: str) -> str:
+    def symbol_of(symbol: str, tool: str) -> str:
         sym = symbol.strip().upper()
+        log.info("mcp %s %s", tool, sym)  # shows in Railway logs whether Gemini reached MAPEX
         if sym not in app.active:
             raise ValueError(f"{sym} is not active on MAPEX (active: {', '.join(app.active) or 'none yet'})")
         return sym
@@ -129,13 +164,7 @@ def build(app):
             q = app.quotes.fresh(sym, now)
         return q
 
-    @server.tool()
-    async def market_snapshot(symbol: str) -> dict:
-        """Live bid/ask, New York time, session, the ICT windows open now and the next one (kill zones, opening
-        ranges, Silver Bullets, macros, NY Lunch), the GEM2 window where MAPEX may enter, session ATR, D1 ATR and the
-        key levels (NY midnight open, weekly open, previous day/week/month high and low). Call it before mapping."""
-        sym = symbol_of(symbol)
-        now = app.clock()
+    async def snapshot(sym: str, now: float) -> dict:
         b = await bars(sym, now, ("M15", "H1", "D1", "W1", "MN1"))
         q = await quote(sym, now)
         dec = app.s.display_decimals.get(sym, 2)
@@ -148,7 +177,8 @@ def build(app):
 
         s_atr, _ = lv.session_atr(b["M15"], b["H1"], now)
         return {
-            "symbol": sym, "time_ny": fmt_ny(now), "weekday_ny": ny(now).strftime("%A"),
+            "symbol": sym, "date_ny": f"{ny(now):%Y-%m-%d}", "time_ny": fmt_ny(now),
+            "weekday_ny": ny(now).strftime("%A"),
             "bid": f(q.bid) if q else None, "ask": f(q.ask) if q else None, "spread": f(q.spread) if q else None,
             "session": current_session(now), "mapex_entry_window": killzone(now), **ict_clock(sym, now),
             "session_atr": f(s_atr), "d1_atr14": f(pr.atr(b["D1"], 14)) if len(b["D1"]) > 14 else None,
@@ -159,26 +189,44 @@ def build(app):
             "decimals": dec, "price_band": app.s.price_bands.get(sym),
         }
 
-    @server.tool()
-    async def market_candles(symbol: str, timeframe: str, count: int = 200) -> dict:
-        """Closed candles from IC Markets, oldest first, as [time_ny, open, high, low, close].
-        timeframe: M1, M5, M15, H1, H4, D1, W1 or MN1; count: up to 500."""
-        sym, tf = symbol_of(symbol), timeframe.strip().upper()
-        if tf not in TFS:
-            raise ValueError(f"timeframe must be one of {', '.join(TFS)}")
-        now = app.clock()
+    async def candles(sym: str, tf: str, count: int, now: float) -> list:
         dec = app.s.display_decimals.get(sym, 2)
         rows = (await bars(sym, now, (tf,)))[tf][-max(1, min(count, MAX_CANDLES)):]
-        return {"symbol": sym, "timeframe": tf, "time_zone": "America/New_York",
-                "columns": ["time_ny", "open", "high", "low", "close"],
-                "bars": [[fmt_ny(x.t), round(x.o, dec), round(x.h, dec), round(x.l, dec), round(x.c, dec)]
-                         for x in rows]}
+        return [[f"{ny(x.t):%Y-%m-%d %H:%M}", *(round(v, dec) for v in (x.o, x.h, x.l, x.c))] for x in rows]
 
-    @server.tool()
+    @server.tool(annotations=READ)
+    async def gem1_inputs(symbol: str) -> dict:
+        """Everything one GEM1 map needs, in one call: the market snapshot (live bid/ask, NY date and time, ICT
+        windows, session ATR, D1 ATR, key levels) plus closed D1 x200, H4 x300, H1 x300 and M15 x200 candles, oldest
+        first, as [time_ny, open, high, low, close]. Call this first for MAP."""
+        sym = symbol_of(symbol, "gem1_inputs")
+        now = app.clock()
+        return {"snapshot": await snapshot(sym, now), "time_zone": "America/New_York", "columns": COLUMNS,
+                "candles": {tf: await candles(sym, tf, n, now) for tf, n in GEM1_INPUTS}}
+
+    @server.tool(annotations=READ)
+    async def mapex_snapshot(symbol: str) -> dict:
+        """Live bid/ask, New York date and time, session, the ICT windows open now and the next one (kill zones,
+        opening ranges, Silver Bullets, macros, NY Lunch), the GEM2 window where MAPEX may enter, session ATR, D1 ATR
+        and the key levels (NY midnight open, weekly open, previous day/week/month high and low)."""
+        sym = symbol_of(symbol, "mapex_snapshot")
+        return await snapshot(sym, app.clock())
+
+    @server.tool(annotations=READ)
+    async def mapex_candles(symbol: str, timeframe: str, count: int = 200) -> dict:
+        """Closed candles from IC Markets, oldest first, as [time_ny, open, high, low, close].
+        timeframe: M1, M5, M15, H1, H4, D1, W1 or MN1; count: up to 500."""
+        sym, tf = symbol_of(symbol, "mapex_candles"), timeframe.strip().upper()
+        if tf not in TFS:
+            raise ValueError(f"timeframe must be one of {', '.join(TFS)}")
+        return {"symbol": sym, "timeframe": tf, "time_zone": "America/New_York", "columns": COLUMNS,
+                "bars": await candles(sym, tf, count, app.clock())}
+
+    @server.tool(annotations=READ)
     async def submit_gem1_map(symbol: str, gem1_json: str) -> dict:
         """Send the complete GEM1 JSON (as text). MAPEX checks every price against live data; the accepted map
         replaces the previous one and the executor starts watching its CHAIN_A/B at once."""
-        sym = symbol_of(symbol)
+        sym = symbol_of(symbol, "submit_gem1_map")
         if app.s.map_source != "gemini":
             return {"accepted": False, "errors": ["MAP_SOURCE=mapex on Railway: the built-in mapper owns the map"]}
         now = app.clock()
@@ -199,10 +247,10 @@ def build(app):
                           for z in res.json["key_zones"]],
                 "valid_until_ny": fmt_ny(now + app.s.map_max_age_h * 3600), "warnings": res.meta["warnings"]}
 
-    @server.tool()
+    @server.tool(annotations=READ)
     async def executor_status(symbol: str) -> dict:
         """The map MAPEX is trading from, each zone's GEM2 state, the latest executor events and open MAPEX trades."""
-        sym = symbol_of(symbol)
+        sym = symbol_of(symbol, "executor_status")
         now = app.clock()
         m, meta = current_map(app.store, sym)
         states = load_states(app.store, sym)
@@ -236,4 +284,9 @@ def build(app):
     server.custom_route("/", methods=["GET"])(health)
     web = server.streamable_http_app(streamable_http_path="/mcp", json_response=True, stateless_http=True,
                                      host="0.0.0.0")
+    web.add_middleware(CORSMiddleware, allow_origins=GEMINI_ORIGINS, allow_origin_regex=GEMINI_ORIGIN_RE,
+                       allow_credentials=True, allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
+                       allow_headers=["Authorization", "Content-Type", "Accept", "Mcp-Session-Id",
+                                      "Mcp-Protocol-Version", "Last-Event-Id"],
+                       expose_headers=["Mcp-Session-Id", "Mcp-Protocol-Version"], max_age=86400)
     return TokenGate(web, app.s.mcp_token)
