@@ -75,3 +75,17 @@ def test_parse_config_forms_and_environment():
     assert t not in masked and masked.startswith(t[:4]) and masked.endswith(t[-4:])
     with pytest.raises(d.DecodeError):
         d.parse_mcp_config("   ")
+
+
+def test_exact_ctrader_web_copy_configuration():
+    """What the 'Copy configuration' button gives (multi-line, no outer braces), pasted as one Railway variable."""
+    head = base64.urlsafe_b64encode(json.dumps({"plant": "icmarkets", "environment": "live"},
+                                               separators=(",", ":")).encode()).decode().rstrip("=")
+    for t in (f"{head}.payload.sig", f"{head}XYZabc123"):  # with or without dots
+        block = f'"url": "https://mcp.ctrader.com/trading/mcp",\n"headers": {{\n  "Authorization": "Bearer {t}"\n}}'
+        for raw in (block, block.replace("\n", " "), f"  {block}  "):
+            assert d.parse_mcp_config(raw) == ("https://mcp.ctrader.com/trading/mcp", t)
+        assert d.parse_mcp_config(t) == (d.DEFAULT_URL, t)  # "Copy token" into CTRADER_MCP_CONFIG
+    assert d.token_environment(f"{head}.payload.sig") == "live"
+    s = config.load({"CTRADER_MCP_CONFIG": block, "CTRADER_MCP_URL": "", "CTRADER_MCP_TOKEN": ""})
+    assert not any("CTRADER" in w for w in s.warnings)

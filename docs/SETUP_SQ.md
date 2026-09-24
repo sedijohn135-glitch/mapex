@@ -15,13 +15,17 @@ Nuk ke nevojë të dish kod. Çdo hap bëhet nga telefoni, në faqen railway.com
 ## 2) Variablat (Service → Variables)
 | Emri | Vlera |
 |---|---|
-| `CTRADER_MCP_CONFIG` | cTrader Web → Settings → **Remote MCP** → butoni "Copy configuration" → ngjite të plotë |
+| `CTRADER_MCP_CONFIG` | cTrader Web → Settings → **Remote MCP** → butoni "Copy configuration" → ngjite **të gjithë bllokun** këtu (url + headers bashkë) |
 | `TELEGRAM_BOT_TOKEN` | tokeni që të jep @BotFather |
 | `TELEGRAM_CHAT_ID` | numri që të kthen boti kur i shkruan `/start` |
 | `LOT_XAUUSD` | p.sh. `0.10` — **lotin e vendos ti** |
 | `LOT_BTCUSD` | p.sh. `0.01` |
 | `TRADING_MODE` | `paper` në fillim; `live` kur je gati |
 | `CONFIRM_LIVE_ACCOUNT` | `YES` vetëm kur do të tregtosh me llogari reale |
+
+**cTrader kërkon vetëm një variabël: `CTRADER_MCP_CONFIG`.** Nëse Railway të sugjeron edhe `CTRADER_MCP_URL` dhe
+`CTRADER_MCP_TOKEN`, fshiji me ✕ (ose lëri bosh) — MAPEX e nxjerr vetë url-në dhe tokenin nga konfigurimi i plotë.
+Alternativë: butoni "Copy token" → vetëm tokeni te `CTRADER_MCP_CONFIG` (url-ja standarde përdoret automatikisht).
 
 Opsionale: `MAX_TRADES_PER_DAY` (3), `MAX_CONSECUTIVE_LOSSES` (3), `DAILY_LOSS_LIMIT_R` (3.0), `MAX_LOT` (1.0),
 `TP1_CLOSE_PCT` (50, lejohet 50–80), `MAX_SPREAD`, `NOTIFY_EXITS` (`true` nëse do mesazh edhe kur mbyllet tregtia).
