@@ -70,9 +70,14 @@ def msg_entry(t: dict, d: int = 2) -> str:
     return "\n".join(lines)
 
 
-def msg_token_expired(detail: str | None = None) -> str:
-    text = ("🔑 <b>TOKENI I CTRADER SKADOI</b> — MAPEX nuk hap tregti.\n"
-            "cTrader Web → Settings → Remote MCP → kopjo konfigurimin → dërgoje këtu: /ctrader KONFIGURIMI")
+def msg_token_expired(detail: str | None = None, openapi: bool = False) -> str:
+    if openapi:
+        text = ("🔑 <b>CTRADER OPEN API: AUTORIZIMI DËSHTOI</b> — MAPEX nuk hap tregti.\n"
+                "Kontrollo te Railway: CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, CTRADER_ACCOUNT_ID dhe tokenat "
+                "(openapi.ctrader.com → aplikacioni yt → Playground → token i ri).")
+    else:
+        text = ("🔑 <b>TOKENI I CTRADER SKADOI</b> — MAPEX nuk hap tregti.\n"
+                "cTrader Web → Settings → Remote MCP → kopjo konfigurimin → dërgoje këtu: /ctrader KONFIGURIMI")
     if detail:
         text += f"\nDetaj: <code>{e(detail[:200])}</code>"
     return text

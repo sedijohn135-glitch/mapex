@@ -181,3 +181,31 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
   - **More lost-session retries.** Up to 8 (safe per D-65).
   - **Heartbeat stats.** Every 5 minutes the heartbeat logs `cTrader: {requests, sessions, lost}`, so the logs
     show how often the server drops the session.
+- **D-69** The Remote MCP could not hold a session: the heartbeat stats showed `{'requests': 14, 'sessions': 13,
+  'lost': 12}`, and the MCP's `count` form was refused ("fromTimestamp: must not be null"). The owner asked urgently
+  for the cTrader Open API with CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, CTRADER_ACCES_TOKEN (their spelling;
+  CTRADER_ACCESS_TOKEN also works), CTRADER_REFRESH_TOKEN and CTRADER_ACCOUNT_ID. This carries out the fallback
+  planned in D-66.
+  - **Transport.** `mapex/ctrader/openapi.py` speaks JSON over WebSocket (port 5036, `websockets`). There is no
+    protobuf compiler and no Twisted. Payload types, fields and units come from spotware/openapi-proto-messages.
+  - **Same interface.** `OpenApiClient` subclasses `CTraderClient` and answers the same MCP-style tool calls.
+    `LiveVenue`, `TradeManager`, the guards and the executor are unchanged.
+  - **Connection.** One authenticated connection: application auth → account list → account auth. It keeps an app
+    heartbeat every 10 s and WebSocket pings. Answers are matched by clientMsgId. Execution events without a
+    clientMsgId are matched by order comment or position id.
+  - **Unit conversion (adapter).** Spot and trendbar prices are 1/100000 (calibration proves digits 5). Relative
+    SL/TP are sent as 1/100000 of the price. `slippageInPoints` is converted to the symbol's own points.
+  - **Account and host.** CTRADER_ACCOUNT_ID may be the ctidTraderAccountId or the login shown in cTrader. The
+    account's `isLive` picks the host (demo/live) and the demo/live environment. Until the account is known, MAPEX
+    stays in paper.
+  - **Tokens.** A refused access token (CH_ACCESS_TOKEN_INVALID / OA_AUTH_TOKEN_EXPIRED) is refreshed with the
+    refresh token. The new pair is kept in the volume (kv) and reused after restarts, unless new tokens are put
+    in Railway.
+  - **Scope.** A view-only token removes `create_order`, so there is no trading profile.
+  - **Safety rules.** Orders are sent once. A timeout or a dropped socket goes to reconciliation, never to a resend;
+    an unanswered request drops the socket so the next call reconnects. A token-refused request, which ran nothing,
+    is resent after re-authorisation.
+  - **Ranges.** Trendbar windows follow the Open API per-period limits instead of 720 h, so start-up history takes
+    about one request per timeframe. Deal lists are clamped to one week.
+  - **Fallback.** The Remote MCP stays as the fallback when the Open API variables are absent. Switching backend
+    forgets any learned relative-points scale.

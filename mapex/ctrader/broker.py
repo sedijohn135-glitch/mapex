@@ -123,6 +123,7 @@ class TradeManager:
         self.clock, self.sleep = clock, sleep
         self.account = account
         self.auth_ok = lambda: True
+        self.auth_text = msg_token_expired  # the App swaps in the Open API wording (D-69)
         self.skew = lambda: 0.0
         self.no_sl_alerted: set[str] = set()
         self.lock = asyncio.Lock()  # one broker conversation at a time: execute / manage / reconcile / flat
@@ -211,7 +212,7 @@ class TradeManager:
             return await self.reconcile_sending(key)
         except AuthError:
             self._update(key, state="FAILED", closed_at=int(self.clock()))
-            self.store.outbox_add(f"auth:{key}", msg_token_expired(), critical=True)
+            self.store.outbox_add(f"auth:{key}", self.auth_text(), critical=True)
             return "failed: auth"
         except ToolError as exc:
             self._update(key, state="FAILED", closed_at=int(self.clock()))

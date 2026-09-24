@@ -429,7 +429,7 @@ class CTraderClient:
         bars: dict[int, Bar] = {}  # raw (unscaled) values; scaled once the encoding is known
         start = frm
         while start < to:
-            end = min(to, start + MAX_WINDOW_S)
+            end = min(to, start + self.window_s(tf))
             cursor = start
             while True:
                 data = await self.call("get_trendbars", {"symbolId": sid, "period": PERIODS[tf],
@@ -442,6 +442,9 @@ class CTraderClient:
                 cursor = max(b.t for b in parsed) + 1
             start = end
         return self._scaled(name, [bars[t] for t in sorted(bars) if frm <= t < to])
+
+    def window_s(self, tf: str) -> int:
+        return MAX_WINDOW_S  # the Remote MCP caps every range at 720 h (Q-R7)
 
     async def last_bars(self, name: str, tf: str, count: int) -> list[Bar] | None:
         """The newest `count` bars in one request: start-up history in 1 call instead of dozens of 720 h chunks

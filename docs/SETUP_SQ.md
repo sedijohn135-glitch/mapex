@@ -15,7 +15,11 @@ Nuk ke nevojë të dish kod. Çdo hap bëhet nga telefoni, në faqen railway.com
 ## 2) Variablat (Service → Variables)
 | Emri | Vlera |
 |---|---|
-| `CTRADER_MCP_CONFIG` | cTrader Web → Settings → **Remote MCP** → butoni "Copy configuration" → ngjite **të gjithë bllokun** këtu (url + headers bashkë) |
+| `CTRADER_CLIENT_ID` | openapi.ctrader.com → aplikacioni yt → **Credentials** → Client ID |
+| `CTRADER_CLIENT_SECRET` | po aty → Secret |
+| `CTRADER_ACCES_TOKEN` | aplikacioni yt → **Playground** → scope **trading** → Get token → Access token |
+| `CTRADER_REFRESH_TOKEN` | po aty → Refresh token |
+| `CTRADER_ACCOUNT_ID` | numri i llogarisë (ai që sheh në cTrader) ose ctidTraderAccountId |
 | `TELEGRAM_BOT_TOKEN` | tokeni që të jep @BotFather |
 | `TELEGRAM_CHAT_ID` | numri që të kthen boti kur i shkruan `/start` |
 | `LOT_XAUUSD` | p.sh. `0.10` — **lotin e vendos ti** |
@@ -23,9 +27,11 @@ Nuk ke nevojë të dish kod. Çdo hap bëhet nga telefoni, në faqen railway.com
 | `TRADING_MODE` | `paper` në fillim; `live` kur je gati |
 | `CONFIRM_LIVE_ACCOUNT` | `YES` vetëm kur do të tregtosh me llogari reale |
 
-**cTrader kërkon vetëm një variabël: `CTRADER_MCP_CONFIG`.** Nëse Railway të sugjeron edhe `CTRADER_MCP_URL` dhe
-`CTRADER_MCP_TOKEN`, fshiji me ✕ (ose lëri bosh) — MAPEX e nxjerr vetë url-në dhe tokenin nga konfigurimi i plotë.
-Alternativë: butoni "Copy token" → vetëm tokeni te `CTRADER_MCP_CONFIG` (url-ja standarde përdoret automatikisht).
+**cTrader lidhet me Open API** (5 variablat më lart). MAPEX e gjen vetë nëse llogaria është demo apo live dhe lidhet
+te serveri i duhur. Kur tokeni skadon (~30 ditë), MAPEX e rinovon vetë me refresh token-in dhe e ruan në Volume.
+Nëse vjen 🔑, merr token të ri nga Playground dhe vendose te Railway.
+Rrugë e vjetër (rezervë): `CTRADER_MCP_CONFIG` nga cTrader Web → Remote MCP — përdoret vetëm kur mungojnë variablat e
+Open API.
 
 Opsionale: `MAX_TRADES_PER_DAY` (3), `MAX_CONSECUTIVE_LOSSES` (3), `DAILY_LOSS_LIMIT_R` (3.0), `MAX_LOT` (1.0),
 `TP1_CLOSE_PCT` (50, lejohet 50–80), `MAX_SPREAD`, `NOTIFY_EXITS` (`true` nëse do mesazh edhe kur mbyllet tregtia).
@@ -65,7 +71,7 @@ Në çdo hap: `/replay XAUUSD 30` të tregon sa tregti do të kishte hapur siste
 /flat     – mbyll të gjitha pozicionet e MAPEX (kërkon /flat yes)
 /trades 7 – tregtitë e 7 ditëve të fundit me rezultatin në R
 /replay XAUUSD 30 – testo sistemin mbi 30 ditë histori (vetëm raport, pa urdhra)
-/ctrader KONFIGURIMI – rinovo tokenin (mesazhi fshihet automatikisht)
+/ctrader KONFIGURIMI – vetëm për Remote MCP (me Open API kredencialet ndryshohen te Railway)
 /health   – si /status, i shkurtër
 ```
 
@@ -73,7 +79,7 @@ Në çdo hap: `/replay XAUUSD 30` të tregon sa tregti do të kishte hapur siste
 | Shenja | Zgjidhja |
 |---|---|
 | "healthcheck failed" | Healthcheck Path duhet `/health`; shiko Deploy Logs |
-| 🔑 tokeni skadoi | cTrader Web → Remote MCP → kopjo → dërgo `/ctrader KONFIGURIMI` te boti |
+| 🔑 autorizimi dështoi | kontrollo 5 variablat CTRADER_… te Railway; token i ri nga openapi.ctrader.com → Playground |
 | S'hap asnjë tregti | normale: kërkohet 100/100 + kill zone; shiko `/status` dhe `/replay` |
 | Mesazhe "PAPER" edhe pse vendose live | mungon `CONFIRM_LIVE_ACCOUNT=YES` ose tokeni është i llogarisë demo |
 | Urdhri dështoi | lexo mesazhin 🛑, kontrollo lotin, spread-in dhe orarin e tregut |
