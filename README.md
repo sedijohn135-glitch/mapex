@@ -1,8 +1,9 @@
 # MAPEX
 
-GEM1 (HTF Structure Mapper) and GEM2 (LTF Execution Engine) turned into deterministic Python. One service on Railway
-reads IC Markets candles through the cTrader Open API (or the Remote MCP), maps liquidity every hour, runs the P1–P4 execution machine
-every minute and — only at **100/100** with every guard passing — opens the trade itself with stop loss and take profit
+GEM1 (HTF Structure Mapper) and GEM2 (LTF Execution Engine) for IC Markets cTrader. By default (D-71) Gemini maps:
+it reads live candles from MAPEX's `/mcp` endpoint and sends the GEM1 JSON back, which MAPEX validates
+(`MAP_SOURCE=mapex` uses the built-in Python mapper instead). One service on Railway reads IC Markets data through
+the cTrader Open API (or the Remote MCP), runs the P1–P4 execution machine every minute and — only at **100/100** with every guard passing — opens the trade itself with stop loss and take profit
 attached, takes a partial at TP1 and moves the stop to breakeven. Lot size comes from Railway variables. Telegram
 receives one message per entry plus critical alerts, in Albanian.
 
@@ -24,7 +25,10 @@ mapex/
   guards.py      kill switch and circuit breakers (count trades and R, never money)
   telegram.py    Albanian messages, outbox, commands
   replay.py      historical replay with simulated fills (/replay SYMBOL DAYS)
-docs/            SETUP_SQ, RULES_SQ, SPEC, DECISIONS, TRACEABILITY, source/GEM1.md, source/GEM2.md
+  gemini_map.py  D-71 intake: validates a GEM1 JSON from Gemini into an executor map
+  mcp_api.py     /mcp (MCP_TOKEN): market_snapshot, market_candles, submit_gem1_map, executor_status
+docs/            SETUP_SQ, RULES_SQ, SPEC, DECISIONS, TRACEABILITY, source/GEM1.md, source/GEM2.md,
+                 gemini/GEM1_SPARK_SKILL.md (paste into Gemini with GEM1.md)
 ```
 
 ## Run

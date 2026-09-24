@@ -6,6 +6,12 @@ pret që tregu t'i marrë ato dhe të kthehet me forcë, dhe hyn vetëm kur **t�
 **100 pikë nga 100**. Çdo gjë tjetër = nuk hyn.
 
 ## Dy trurët
+**Tani (parazgjedhje, `MAP_SOURCE=gemini`): GEM 1 e bën Gemini, GEM 2 e bën MAPEX.** Gemini merr qirinjtë live nga
+MAPEX (`/mcp`), bën hartën sipas GEM1 dhe ia dërgon MAPEX-it si JSON. MAPEX e kontrollon çdo çmim: zonat në anën e
+gabuar, shumë larg (> 3 × ATR ditore) ose pa objektiv hiqen; harta pa CHAIN_A/B refuzohet. Pastaj MAPEX e ndjek
+çdo minutë me GEM 2 më poshtë. Gemini nuk mund të hapë apo mbyllë tregti. Harta skadon pas 6 orësh.
+Me `MAP_SOURCE=mapex` hartën e bën vetë MAPEX, si më poshtë:
+
 1. **GEM 1 — Hartuesi (D1 / H4 / H1)**, pas çdo mbylljeje të orës:
    - gjen të gjitha nivelet e likuiditetit (majat/fundet e ditës, javës, muajit, sesioneve, "equal highs/lows", etj.)
      dhe u jep secilës një pikë **LPS 0–100** (sa i rëndësishëm është niveli);

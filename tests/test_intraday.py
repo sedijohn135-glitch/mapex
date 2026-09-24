@@ -90,4 +90,4 @@ def test_chain_mode_setting_and_replay_diagnostics():
     rep.blocks["Second sweep, wick only (Type #)"] = 4
     text = rep.text()
     assert "Kill zone me zinxhir afër çmimit: 1/2" in text and "bias_tie 3" in text
-    assert "RAID 5 · SHIFT 2 · GAP 0 · RETURN 0 · CONFIRMED 0" in text and "wick only" in text
+    assert "RAID 5 · SHIFT 2 · GAP 0 · RETURN 0 · CONFIRMED 0" in text and "Ku ndalet GEM2" in text
