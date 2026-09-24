@@ -31,6 +31,11 @@ class Settings:
     ctrader_config: str = ""
     ctrader_url: str = ""
     ctrader_token: str = ""
+    ctrader_client_id: str = ""  # cTrader Open API (D-69): used instead of the Remote MCP when complete
+    ctrader_client_secret: str = ""
+    ctrader_access_token: str = ""
+    ctrader_refresh_token: str = ""
+    ctrader_account_id: str = ""
     telegram_token: str = ""
     telegram_chat_id: str = ""
     trading_mode: str = "paper"
@@ -58,6 +63,11 @@ class Settings:
     data_dir: Path = Path("./data")
     volume_mounted: bool = False
     log_level: str = "INFO"
+
+    @property
+    def openapi(self) -> bool:
+        return bool(self.ctrader_client_id and self.ctrader_client_secret and self.ctrader_account_id
+                    and (self.ctrader_access_token or self.ctrader_refresh_token))
     port: int = 8080
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -108,6 +118,11 @@ def load(env: dict | None = None) -> Settings:
     s.ctrader_config = env.get("CTRADER_MCP_CONFIG", "").strip()
     s.ctrader_url = env.get("CTRADER_MCP_URL", "").strip()
     s.ctrader_token = env.get("CTRADER_MCP_TOKEN", "").strip()
+    s.ctrader_client_id = env.get("CTRADER_CLIENT_ID", "").strip()
+    s.ctrader_client_secret = env.get("CTRADER_CLIENT_SECRET", "").strip()
+    s.ctrader_access_token = (env.get("CTRADER_ACCESS_TOKEN") or env.get("CTRADER_ACCES_TOKEN") or "").strip()
+    s.ctrader_refresh_token = env.get("CTRADER_REFRESH_TOKEN", "").strip()
+    s.ctrader_account_id = env.get("CTRADER_ACCOUNT_ID", "").strip()
     s.telegram_token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
     s.telegram_chat_id = env.get("TELEGRAM_CHAT_ID", "").strip()
     mode = env.get("TRADING_MODE", "paper").strip().lower() or "paper"
@@ -167,7 +182,12 @@ def load(env: dict | None = None) -> Settings:
         warns.append("No Railway volume: trade history and duplicate protection are lost on every redeploy")
     s.log_level = env.get("LOG_LEVEL", "INFO").upper()
     s.port = _num(env, "PORT", 8080, int, errs)
-    if not (s.ctrader_config or (s.ctrader_url and s.ctrader_token) or s.ctrader_token):
+    oa = {"CTRADER_CLIENT_ID": s.ctrader_client_id, "CTRADER_CLIENT_SECRET": s.ctrader_client_secret,
+          "CTRADER_ACCES_TOKEN": s.ctrader_access_token or s.ctrader_refresh_token,
+          "CTRADER_ACCOUNT_ID": s.ctrader_account_id}
+    if any(oa.values()) and not s.openapi:
+        warns.append("cTrader Open API incomplete, missing: " + ", ".join(k for k, v in oa.items() if not v))
+    elif not s.openapi and not (s.ctrader_config or (s.ctrader_url and s.ctrader_token) or s.ctrader_token):
         warns.append("CTRADER_MCP_CONFIG missing: no market data until it is set")
     if not (s.telegram_token and s.telegram_chat_id):
         warns.append("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing: no notifications")

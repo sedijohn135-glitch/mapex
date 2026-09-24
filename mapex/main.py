@@ -15,6 +15,7 @@ from mapex.core.timeutil import fmt_ny, market_open, trading_day
 from mapex.ctrader.broker import LiveVenue, TradeManager
 from mapex.ctrader.client import AuthError, CTraderClient, CTraderError, http_connector
 from mapex.ctrader.decode import DEFAULT_URL, DecodeError, mask, parse_mcp_config, token_environment
+from mapex.ctrader.openapi import OpenApiClient, ws_connect
 from mapex.ctrader.paper import PaperVenue
 from mapex.data.candles import Candles
 from mapex.data.quotes import Quotes
@@ -63,7 +64,7 @@ def setup_logging(level: str, secrets: list[str]) -> RedactFilter:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(getattr(logging, level, logging.INFO))
-    for noisy in ("httpx", "httpx2", "mcp", "uvicorn.access"):
+    for noisy in ("httpx", "httpx2", "mcp", "uvicorn.access", "websockets"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     return f
 
@@ -96,7 +97,8 @@ def resolve_credentials(s: Settings, store: Store) -> tuple[str, str, str]:
 
 
 class App:
-    def __init__(self, s: Settings, clock=time.time, connector=http_connector, tg_http=None, db_path=None):
+    def __init__(self, s: Settings, clock=time.time, connector=http_connector, tg_http=None, db_path=None,
+                 openapi_connect=ws_connect):
         self.s, self.clock = s, clock
         self.owner = uuid.uuid4().hex[:12]
         self.leader = False
@@ -106,9 +108,20 @@ class App:
         except Exception as exc:  # noqa: BLE001 — never die: run in memory, trip the kill switch loudly
             self.db_error = f"{type(exc).__name__}: {exc}"
             self.store = Store(":memory:")
-        url, token, self.cred_source = resolve_credentials(s, self.store)
-        self.client = CTraderClient(url, token, connector=connector, clock=clock)
-        self.env = token_environment(token) if token else "unknown"
+        backend = "openapi" if s.openapi else "mcp"
+        if self.store.get("ctrader_backend") != backend:  # relative-points scales learned on another backend
+            self.store.execute("DELETE FROM kv WHERE k LIKE 'points_digits:%'")
+            self.store.put("ctrader_backend", backend)
+        if s.openapi:  # D-69: demo/live comes from the account itself once connected
+            self.cred_source = "openapi"
+            self.client = OpenApiClient(s.ctrader_client_id, s.ctrader_client_secret, s.ctrader_access_token,
+                                        s.ctrader_refresh_token, s.ctrader_account_id, store=self.store,
+                                        connect=openapi_connect, clock=clock)
+            self.env = "unknown"
+        else:
+            url, token, self.cred_source = resolve_credentials(s, self.store)
+            self.client = CTraderClient(url, token, connector=connector, clock=clock)
+            self.env = token_environment(token) if token else "unknown"
         self.mode, self.forced_paper = effective_mode(s, self.env)
         self.candles = Candles(self.client)
         self.quotes = Quotes()
@@ -116,6 +129,7 @@ class App:
         self.tm = TradeManager(self.store, s, self.venue, clock=clock, account=self.env)
         self.tm.auth_ok = lambda: self.client.auth_error_since is None
         self.tm.skew = lambda: self.client.skew_s
+        self.tm.auth_text = lambda: msg_token_expired(openapi=s.openapi)
         self.bot = TelegramBot(s.telegram_token, s.telegram_chat_id, self.store, http=tg_http, clock=clock)
         self.active: list[str] = []
         self.disabled: dict[str, str] = {}
@@ -166,7 +180,22 @@ class App:
         except CTraderError as exc:
             self.last_error = f"connect: {exc}"
             return
+        env = getattr(self.client, "env", "unknown")
+        if env != "unknown" and env != self.env:
+            self.apply_env(env)
         await self.calibrate_symbols(self.s.symbols)
+
+    def apply_env(self, env: str) -> None:
+        """Open API: demo/live is known only after connecting; the trading mode follows it (M7)."""
+        self.env = env
+        mode, self.forced_paper = effective_mode(self.s, env)
+        self.tm.account = env
+        if mode != self.mode:
+            if guards.open_trades(self.store):
+                guards.trip(self.store, "llogaria ndryshoi me pozicione të hapura — rinis shërbimin", self.clock())
+                return
+            self.mode, self.venue = mode, self._venue(mode)
+            self.tm.venue = self.venue
 
     async def calibrate_symbols(self, symbols: list[str], announce: bool = False) -> None:
         """Calibrate each symbol on a live bid; a transient failure keeps it disabled until the next heartbeat."""
@@ -208,7 +237,8 @@ class App:
         since = self.client.auth_error_since or now
         if not self.auth_alerted:
             self.auth_alerted = True
-            self.store.outbox_add(f"auth:{int(since)}", msg_token_expired(self.client.last_auth_detail),
+            self.store.outbox_add(f"auth:{int(since)}", msg_token_expired(self.client.last_auth_detail,
+                                                                          openapi=self.s.openapi),
                                   critical=True, now=now)
         if now - since > AUTH_TRIP_S:
             guards.trip(self.store, "tokeni i cTrader nuk pranohet prej >15 min", now)
@@ -385,6 +415,10 @@ class App:
                 "/health")
 
     async def set_ctrader(self, raw: str) -> str:
+        if self.s.openapi:
+            return ("ℹ️ MAPEX përdor cTrader Open API: kredencialet ndryshohen te Railway → Variables "
+                    "(CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, CTRADER_ACCES_TOKEN, CTRADER_REFRESH_TOKEN, "
+                    "CTRADER_ACCOUNT_ID).")
         try:
             url, token = parse_mcp_config(raw)
         except DecodeError:
@@ -558,7 +592,8 @@ class App:
 
 def main() -> None:
     s = config.load()
-    setup_logging(s.log_level, [s.ctrader_token, s.telegram_token, s.ctrader_config])
+    setup_logging(s.log_level, [s.ctrader_token, s.telegram_token, s.ctrader_config, s.ctrader_client_secret,
+                                s.ctrader_access_token, s.ctrader_refresh_token])
     for w in s.warnings + s.errors:
         log.warning(w)
     app = App(s)

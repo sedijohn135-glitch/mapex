@@ -1,7 +1,7 @@
 # MAPEX
 
 GEM1 (HTF Structure Mapper) and GEM2 (LTF Execution Engine) turned into deterministic Python. One service on Railway
-reads IC Markets candles through the cTrader Remote MCP, maps liquidity every hour, runs the P1–P4 execution machine
+reads IC Markets candles through the cTrader Open API (or the Remote MCP), maps liquidity every hour, runs the P1–P4 execution machine
 every minute and — only at **100/100** with every guard passing — opens the trade itself with stop loss and take profit
 attached, takes a partial at TP1 and moves the stop to breakeven. Lot size comes from Railway variables. Telegram
 receives one message per entry plus critical alerts, in Albanian.
@@ -17,7 +17,7 @@ mapex/
   store.py       SQLite (WAL): maps, zones, trades, order_log, events, outbox, kv, lease
   pipeline.py    the single decision path used by live, paper and replay
   core/          NY time/sessions/killzones, candle primitives, PD arrays, liquidity levels
-  ctrader/       MCP client, unit decoding, broker order flow (live), paper venue
+  ctrader/       Open API + MCP clients, unit decoding, broker order flow (live), paper venue
   data/          candle cache (closed bars, contiguity), quotes (freshness, skew)
   mapper/        GEM1 Step 0 → 8 (liquidity registry + LPS, bias, chains, verification, brief)
   executor/      GEM2 Module 5, P1–P4, Modules 6–8, stop-loss mandate, TP ladder, alpha pick
