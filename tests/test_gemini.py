@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
@@ -12,7 +13,7 @@ from mapex.core.timeutil import TF_SECONDS
 from mapex.ctrader.client import Quote
 from mapex.gemini_map import MapRejected, accept, parse
 from mapex.main import App
-from mapex.mcp_api import ict_clock
+from mapex.mcp_api import ICT_TIMES, ict_clock
 from mapex.pipeline import current_map, run_executor, save_map
 from tests.helpers import ny_ts
 from tests.synth import market_m1
@@ -177,3 +178,13 @@ def test_ict_clock_knows_every_window_of_the_owners_prompt():
     assert ict_clock("XAUUSD", ny_ts(2026, 9, 22, 1, 0))["ict_next"]["windows"] == ["London Opening Range 01:30-02:00"]
     weekend = ict_clock("XAUUSD", ny_ts(2026, 9, 25, 17, 30))  # Friday after the close: gold is shut
     assert weekend["ict_now"] == [] and weekend["ict_next"]["starts_ny"] == "Sun 19:00"
+
+
+def test_gem_instructions_carry_gem1_the_tools_and_the_ict_clock():
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "docs/gemini/GEM_INSTRUCTIONS.md").read_text()
+    assert text.endswith((root / "docs/source/GEM1.md").read_text())  # GEM1 changed: rebuild and re-paste the Gem
+    assert all(t in text for t in ("market_snapshot", "market_candles", "submit_gem1_map", "executor_status"))
+    for name, start, end in ICT_TIMES:
+        if not name.startswith("Macro"):
+            assert f"{start}–{end.replace('24:00', '00:00')}" in text, name

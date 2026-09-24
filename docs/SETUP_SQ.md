@@ -91,9 +91,14 @@ Në çdo hap: `/replay XAUUSD 30` të tregon sa tregti do të kishte hapur siste
    `https://<domeni>/mcp?key=<MCP_TOKEN>`
    (nëse Gemini ka fushë të veçantë për çelësin: adresa `https://<domeni>/mcp` dhe header
    `Authorization: Bearer <MCP_TOKEN>`).
-5. Te udhëzimet e skill-it në Gemini ngjit: së pari `docs/gemini/GEM1_SPARK_SKILL.md`, pastaj të plotë
-   `docs/source/GEM1.md`.
-6. Shkruaji Gemini-t: **MAP XAUUSD**. Gemini thërret `market_snapshot`, `market_candles`, pastaj `submit_gem1_map`.
+5. Krijo një **Gem**: gemini.google.com → Gems → New Gem.
+   - **Name:** `MAPEX GEM1 Mapper`
+   - **Description:** `Harton XAUUSD/BTCUSD me GEM1 mbi të dhënat live të MAPEX dhe ia dërgon hartën ekzekutorit.`
+   - **Instructions:** ngjit të gjithë `docs/gemini/GEM_INSTRUCTIONS.md` (përmban edhe GEM1 të plotë dhe oraret ICT).
+     Nëse Gemini thotë që teksti është shumë i gjatë: ngjit te Instructions vetëm pjesën para
+     `# GEM1 PROMPT (law)`, dhe `docs/source/GEM1.md` ngarkoje te **Knowledge** si skedar.
+   - **Save**. Hap Gem-in dhe sigurohu që konektori MAPEX është aktiv.
+6. Te Gem-i shkruaj: **MAP XAUUSD**. Gemini thërret `market_snapshot`, `market_candles`, pastaj `submit_gem1_map`.
    Në Telegram `/status` duhet të tregojë `XAUUSD: harta Gemini HH:MM NY · bias …`.
 7. Orari (nëse Gemini lejon veprime të planifikuara), çdo ditë pune: **07:30**, **14:00**, **19:30** ora e Tiranës
    (para London, New York dhe PM Silver Bullet).

@@ -261,14 +261,18 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
   - **Staleness.** `MAP_MAX_AGE_H` (6) applies to Gemini maps. One critical Telegram alert per map is sent when a
     kill zone runs on an expired map, or when a zone's thesis breaks (a D1 close past the root). The built-in
     mapper no longer runs. Candles are still refreshed hourly for GEM2 and for Gemini.
-  - **Skill.** `docs/gemini/GEM1_SPARK_SKILL.md` replaces only GEM1's data source (MAPEX tools instead of
+  - **Skill.** `docs/gemini/GEM_INSTRUCTIONS.md` replaces only GEM1's data source (MAPEX tools instead of
     screenshots), its handoff (`submit_gem1_map`) and its horizon (intraday, as D-70). The rest of GEM1 is pasted
     under it unchanged.
 - **D-72** Gemini knows the owner's whole ICT clock. The windows come from the owner's ICT Sniper V13 prompt: kill
   zones, opening ranges, Silver Bullets, NY Lunch, PM session, Last Hour, and the ten macros (±10 min).
   - `market_snapshot` returns `ict_now` (windows open this minute) and `ict_next` (the next ones, minutes to go). Both
     are computed from the live NY clock, DST-safe, and are empty while the symbol's market is shut.
-    `docs/gemini/GEM1_SPARK_SKILL.md` §5 holds the full table.
+    `docs/gemini/GEM_INSTRUCTIONS.md` §5 holds the full table.
   - This is context for mapping only. MAPEX still enters only in the GEM2 kill zones (London 02:00–05:00, New York
     08:30–11:00, PM Silver Bullet 14:00–15:00; never in NY Lunch 12:00–13:30 or after 15:50). The snapshot calls
     that window `mapex_entry_window` so Gemini cannot confuse the two.
+- **D-73** The owner runs the mapper as a Gemini **Gem**, not Spark. `docs/gemini/GEM_INSTRUCTIONS.md` is the Gem's
+  whole Instructions field: the MAPEX rules (commands, tools, intraday horizon, the ICT clock) followed by the full
+  GEM1 prompt. `tests/test_gemini.py` keeps its GEM1 part identical to `docs/source/GEM1.md` and checks that every
+  ICT window in `mcp_api.ICT_TIMES` appears in it.

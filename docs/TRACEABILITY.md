@@ -6,7 +6,7 @@ Deviations and interpretations: `docs/DECISIONS.md`.
 
 ## GEM 1 — HTF Structure Mapper
 
-> D-71: with `MAP_SOURCE=gemini` (the default) Gemini runs GEM1 from `docs/gemini/GEM1_SPARK_SKILL.md` and
+> D-71: with `MAP_SOURCE=gemini` (the default) Gemini runs GEM1 from `docs/gemini/GEM_INSTRUCTIONS.md` and
 > `mapex/gemini_map.py::accept` checks its JSON (`tests/test_gemini.py`). The rows below are the built-in mapper,
 > used with `MAP_SOURCE=mapex`.
 
