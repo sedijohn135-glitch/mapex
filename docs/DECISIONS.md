@@ -156,3 +156,9 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
     is resent on the same session up to 5 times, orders included, which cannot duplicate an order. A timeout is still
     never resent, and reconciliation still adopts, or flags as orphan, any MAPEX position it did not expect.
   - **No session DELETE on exit.** Every DELETE was answered 404.
+- **D-66** The owner offered cTrader Open API credentials (client id/secret, access/refresh token, account id) in case
+  the Remote MCP cannot do the job. Kept the Remote MCP: every failure seen on Railway had a concrete cause fixed in
+  D-64/D-65, and live quotes already flowed. Open API would replace the whole broker layer (protobuf or JSON over
+  TCP/WebSocket, token refresh, event stream) and bring new failure modes. It becomes the plan only if candles or
+  orders still fail after D-65, as a second connection behind the same `CTraderClient` interface, selected by
+  Railway variables. The secrets would then go only into Railway, never into chat or code.
