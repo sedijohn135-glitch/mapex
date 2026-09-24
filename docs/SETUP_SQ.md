@@ -78,3 +78,5 @@ Në çdo hap: `/replay XAUUSD 30` të tregon sa tregti do të kishte hapur siste
 | Mesazhe "PAPER" edhe pse vendose live | mungon `CONFIRM_LIVE_ACCOUNT=YES` ose tokeni është i llogarisë demo |
 | Urdhri dështoi | lexo mesazhin 🛑, kontrollo lotin, spread-in dhe orarin e tregut |
 | ⚠️ Pa Volume | Railway → + Create → Volume → Mount path `/data` |
+| ⛔ loti refuzohet (… MAX_LOT …) | vendos lot ≤ `MAX_LOT`, ose rrit `MAX_LOT` nëse e do vërtet atë lot |
+| ⛔ çmimet nuk u dekoduan | dërgo foto të mesazhit (përmban çmimin e marrë) — MAPEX nuk tregton atë simbol |

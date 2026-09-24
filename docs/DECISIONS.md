@@ -122,3 +122,18 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
   volume) so it survives restarts; it is never logged, never shown (masked `eyJw…AB12`), and the Telegram message
   carrying it is deleted.
 - **D-59** `.gitignore` ignores only the root `/data/` directory (the runtime DB), never the `mapex/data/` package.
+
+## After the first real connection (demo account, 2026-09-24)
+
+- **D-60** The first real start-up disabled XAUUSD: the live bid did not decode with the precision-table digits
+  (the real server's encoding differs from the ctrader-skills table). Calibration now tries the resolved digits
+  first and then the *unique* power of ten that lands the bid inside `PRICE_BANDS` (bands are narrower than 10×, so
+  at most one fits; display floats decode with 0). No unique answer still disables the symbol. Trendbars are
+  calibrated separately on their last close (their encoding may differ from spot); timestamps may be ISO strings.
+- **D-61** Errors that only mention "session" (MCP `Mcp-Session-Id` expiry) are transport errors: the client
+  reconnects and retries read tools. Only 401/403 or unauthorised/forbidden/expired/invalid-token texts are auth
+  errors. The 🔑 alert now carries the (redacted) server message.
+- **D-62** Relative SL/TP points use the calibrated pipette digits (metadata / table default when spot comes as
+  display floats). After a fill, the SL distance the broker actually applied is compared with the intended one; a
+  power-of-ten mismatch is stored as `points_digits:<SYMBOL>` and used from the next order on (the current one is
+  exactified by the amend + read-back as always). `MAX_SLIPPAGE_POINTS` keeps its price value when the digits change.

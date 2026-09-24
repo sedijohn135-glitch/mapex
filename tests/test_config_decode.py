@@ -47,8 +47,12 @@ def test_units():
     with pytest.raises(d.DecodeError):
         d.price_field(2650450, 2, [1500, 14000])  # M5: pipettes written into a price field
     assert d.calibrate_digits(2650450, [None, None, 3], [1500, 14000]) == 3
+    assert d.calibrate_digits(2650450, [2], [1500, 14000]) == 3  # the unique power of ten, not a guess
+    assert d.calibrate_digits(4287.42, [3], [1500, 14000]) == 0  # display floats
     with pytest.raises(d.DecodeError):
-        d.calibrate_digits(2650450, [2], [1500, 14000])  # never guesses
+        d.calibrate_digits(2650450, [], [1, 10_000_000])  # ambiguous band -> refuse
+    with pytest.raises(d.DecodeError):
+        d.calibrate_digits(0.5, [], [1500, 14000])  # nothing fits -> refuse
     assert d.decode_position_price(2650450, 3, [1500, 14000]) == 2650.45
     assert d.decode_position_price(2650.45, 3, [1500, 14000]) == 2650.45
     assert d.decode_position_price(0, 3, [1500, 14000]) is None

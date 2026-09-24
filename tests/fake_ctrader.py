@@ -28,6 +28,10 @@ class FakeCTrader:
         self.delay = 0.0
         self.fail_modes: dict[str, str] = {}
         self.now_ms = 1_790_000_000_000
+        self.spot_encoding = "pipettes"  # pipettes | display | e5 | pip2
+        self.bar_encoding = "pipettes"
+        self.points_digits: dict[str, int] = {}  # how the server reads relative SL/TP points (default: digits)
+        self.fail_once: dict[str, str] = {}
 
     # ------------------------------------------------------------ helpers
     def sym(self, sid: int) -> str:
@@ -47,6 +51,15 @@ class FakeCTrader:
         self.calls.append((tool, {k: v for k, v in args.items() if v is not None}))
         if self.auth_fail:
             raise ToolError("401 Unauthorized: token expired")
+        if tool in self.fail_once:
+            raise ToolError(self.fail_once.pop(tool))
+
+    def scale(self, name: str, encoding: str):
+        return {"pipettes": 10 ** SYMBOLS[name][1], "display": 1, "e5": 10**5, "pip2": 100}[encoding]
+
+    def raw(self, name: str, price: float, encoding: str):
+        v = price * self.scale(name, encoding)
+        return round(v, 2) if encoding == "display" else round(v)
 
     def pos_view(self, p: dict) -> dict:
         name = self.sym(p["symbolId"])
@@ -97,9 +110,8 @@ def build_server(fake: FakeCTrader) -> MCPServer:
         for s in symbolId:
             n = known[s]
             bid, ask, ts = fake.quotes[n]
-            d = SYMBOLS[n][1]
-            out.append({"symbolId": s, "bid": round(bid * 10**d), "ask": round(ask * 10**d),
-                        "timestamp": ts or fake.now_ms})
+            out.append({"symbolId": s, "bid": fake.raw(n, bid, fake.spot_encoding),
+                        "ask": fake.raw(n, ask, fake.spot_encoding), "timestamp": ts or fake.now_ms})
         return {"prices": out}
 
     @srv.tool()
@@ -111,13 +123,14 @@ def build_server(fake: FakeCTrader) -> MCPServer:
         if toTimestamp - fromTimestamp > 720 * 3600 * 1000:
             raise ToolError("Time range exceeds upstream cap of 720h (PT720H = 30 days).")
         name = fake.sym(symbolId)
-        d = SYMBOLS[name][1]
+        enc = fake.bar_encoding
         tf = {"M_1": "M1", "M_5": "M5", "M_15": "M15", "M_30": "M30", "H_1": "H1", "H_4": "H4", "D_1": "D1",
               "W_1": "W1", "MN_1": "MN1"}[period]
         rows = [b for b in fake.bars.get((name, tf), []) if fromTimestamp <= b[0] * 1000 < toTimestamp]
         page, more = rows[:1000], len(rows) > 1000
-        return {"trendbars": [{"timestamp": b[0] * 1000, "open": round(b[1] * 10**d), "high": round(b[2] * 10**d),
-                               "low": round(b[3] * 10**d), "close": round(b[4] * 10**d)} for b in page],
+        return {"trendbars": [{"timestamp": b[0] * 1000, "open": fake.raw(name, b[1], enc),
+                               "high": fake.raw(name, b[2], enc), "low": fake.raw(name, b[3], enc),
+                               "close": fake.raw(name, b[4], enc)} for b in page],
                 "hasMore": more}
 
     @srv.tool()
@@ -135,7 +148,7 @@ def build_server(fake: FakeCTrader) -> MCPServer:
         if volume <= 0:
             raise ToolError("volume must be positive")
         bid, ask, _ = fake.quotes[name]
-        d = SYMBOLS[name][1]
+        d = fake.points_digits.get(name, SYMBOLS[name][1])
         fill = ask if tradeSide == "BUY" else bid
         sgn = 1 if tradeSide == "BUY" else -1
         sl = None if relativeStopLoss is None or "no_sl" in fake.mode else fill - sgn * relativeStopLoss / 10**d

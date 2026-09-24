@@ -32,15 +32,52 @@ def test_symbols_calibration_and_spot():
     assert c.trading_profile
 
 
-def test_calibration_failure_never_guesses():
+def test_calibration_finds_the_unique_digits_or_refuses():
     fake = FakeCTrader()
+
+    async def go(cands, band):
+        c = client_for(fake)
+        return await c.calibrate("XAUUSD", cands, band)
+
+    assert run(go([None, 2], [1500, 14000])) == 3  # wrong candidate 2, but only 10^3 lands the bid in the band
+    with pytest.raises(ValueError):
+        run(go([None], [1, 1_000_000]))  # a band wider than 10x is ambiguous: never guessed
+
+
+@pytest.mark.parametrize("encoding,expected", [("pipettes", 3), ("display", 0), ("e5", 5), ("pip2", 2)])
+def test_every_spot_and_bar_encoding_decodes_to_real_prices(encoding, expected):
+    """The real server may send display floats, pipettes or 1/100000 units: all must decode to ~4287."""
+    fake = FakeCTrader()
+    fake.quotes["XAUUSD"] = (4287.42, 4287.48, 0)
+    fake.spot_encoding = encoding
+    fake.bar_encoding = encoding
+    start = 1_790_000_000 - 1_790_000_000 % 3600
+    fake.bars[("XAUUSD", "H1")] = [(start + i * 3600, 4280 + i, 4290 + i, 4270 + i, 4285.55 + i) for i in range(5)]
 
     async def go():
         c = client_for(fake)
-        return await c.calibrate("XAUUSD", [None, 2], [1500, 14000])
+        d = await c.calibrate("XAUUSD", [None, 3], [1500, 14000])
+        q = await c.spot(["XAUUSD"])
+        bars = await c.trendbars("XAUUSD", "H1", start, start + 5 * 3600)
+        return d, q["XAUUSD"], bars
 
-    with pytest.raises(ValueError):
-        run(go())
+    d, q, bars = run(go())
+    assert d == expected
+    assert abs(q.bid - 4287.42) < 1e-6 and abs(q.ask - 4287.48) < 1e-6
+    assert abs(bars[-1].c - 4289.55) < 1e-6 and len(bars) == 5
+
+
+def test_session_errors_reconnect_instead_of_token_alarm():
+    fake = FakeCTrader()
+    fake.fail_once["get_version"] = "Bad Request: No valid session ID provided"
+
+    async def go():
+        c = client_for(fake)
+        await c.load_symbols()
+        return c, await c.call("get_version")
+
+    c, out = run(go())
+    assert out["version"] and c.auth_error_since is None  # retried on a fresh session, no 🔑
 
 
 def test_unknown_symbol_never_sent_in_batch():

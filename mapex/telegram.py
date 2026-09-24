@@ -70,9 +70,12 @@ def msg_entry(t: dict, d: int = 2) -> str:
     return "\n".join(lines)
 
 
-def msg_token_expired() -> str:
-    return ("🔑 <b>TOKENI I CTRADER SKADOI</b> — MAPEX nuk hap tregti.\n"
+def msg_token_expired(detail: str | None = None) -> str:
+    text = ("🔑 <b>TOKENI I CTRADER SKADOI</b> — MAPEX nuk hap tregti.\n"
             "cTrader Web → Settings → Remote MCP → kopjo konfigurimin → dërgoje këtu: /ctrader KONFIGURIMI")
+    if detail:
+        text += f"\nDetaj: <code>{e(detail[:200])}</code>"
+    return text
 
 
 def msg_auto_stop(reason: str) -> str:
@@ -84,14 +87,17 @@ def msg_no_sl(symbol: str, position_id) -> str:
     return f"⚠️ <b>POZICION PA SL</b> — {e(symbol)} #{e(position_id)}. Kontrollo manualisht."
 
 
-def msg_startup(mode: str, account: str, lots: dict[str, float], s, forced_paper: bool, notes: list[str]) -> str:
-    syms = " · ".join(f"{e(k)} {v:.2f}" for k, v in lots.items()) or "asnjë (mungon LOT_…)"
+def msg_startup(mode: str, account: str, lots: dict[str, float], s, forced_paper: bool, notes: list[str],
+                status: dict[str, str] | None = None) -> str:
+    syms = " · ".join(f"{e(k)} {v:.2f}" for k, v in lots.items()) or "asnjë"
     text = (f"🚀 MAPEX u ndez · Modaliteti: {mode.upper()} · Llogaria: {e(account)} · Simbolet: {syms}\n"
             f"Mbrojtjet: max {s.max_trades_per_day} tregti/ditë · max {s.max_open_per_symbol} pozicion/simbol · "
             f"ndalim pas {s.max_consecutive_losses} humbjeve")
     if forced_paper:
         text += ("\n⚠️ TRADING_MODE=live, por llogaria është LIVE dhe CONFIRM_LIVE_ACCOUNT≠YES → "
                  "MAPEX po punon në PAPER.")
+    for sym, why in (status or {}).items():
+        text += f"\n⛔ {e(sym)}: {e(why)}"
     for n in notes:
         text += f"\n⚠️ {e(n)}"
     return text
