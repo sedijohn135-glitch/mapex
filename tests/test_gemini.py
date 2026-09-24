@@ -129,11 +129,14 @@ def test_mcp_needs_the_token_and_gives_gemini_live_data(tmp_path, mkt):
         assert rpc(c, "tools/list", key=None).status_code == 401
         assert rpc(c, "tools/list", key="wrong").status_code == 401
         tools = rpc(c, "tools/list", key=None, headers={"Authorization": f"Bearer {TOKEN}"}).json()["result"]["tools"]
-        assert {t["name"] for t in tools} == {"market_snapshot", "market_candles", "submit_gem1_map",
+        assert {t["name"] for t in tools} == {"gem1_inputs", "market_snapshot", "market_candles", "submit_gem1_map",
                                               "executor_status"}
         hints = {t["name"]: t["annotations"]["readOnlyHint"] for t in tools}
-        assert hints == {"market_snapshot": True, "market_candles": True, "executor_status": True,
-                         "submit_gem1_map": False}  # lets Gemini skip the Allow prompt for reads
+        assert hints == {"gem1_inputs": True, "market_snapshot": True, "market_candles": True,
+                         "executor_status": True, "submit_gem1_map": False}  # lets Gemini skip Allow for reads
+        one = call(c, "gem1_inputs", symbol="XAUUSD")  # one Allow for all GEM1 data
+        assert one["snapshot"]["bid"] == round(price, 2) and set(one["candles"]) == {"D1", "H4", "H1", "M15"}
+        assert one["candles"]["H1"][-1][4] == round(bars["H1"][-1].c, 2) and len(one["candles"]["D1"]) <= 200
         snap = call(c, "market_snapshot", symbol="xauusd")
         assert snap["bid"] == round(price, 2) and snap["pdh"] == round(bars["D1"][-1].h, 2)
         assert snap["session_atr"] > 0 and snap["weekly_open"] is not None
@@ -195,7 +198,8 @@ def test_gem_instructions_carry_gem1_the_tools_and_the_ict_clock():
     root = Path(__file__).resolve().parent.parent
     text = (root / "docs/gemini/GEM_INSTRUCTIONS.md").read_text()
     assert text.endswith((root / "docs/source/GEM1.md").read_text())  # GEM1 changed: rebuild and re-paste the Gem
-    assert all(t in text for t in ("market_snapshot", "market_candles", "submit_gem1_map", "executor_status"))
+    assert all(t in text for t in ("gem1_inputs", "market_snapshot", "market_candles", "submit_gem1_map",
+                                   "executor_status"))
     for name, start, end in ICT_TIMES:
         if not name.startswith("Macro"):
             assert f"{start}–{end.replace('24:00', '00:00')}" in text, name
