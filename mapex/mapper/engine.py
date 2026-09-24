@@ -26,6 +26,9 @@ from mapex.mapper.liquidity import TF_RANK, Pool, build_registry, dealing_range
 MIN_BARS = {"D1": 30, "H4": 30, "H1": 30}
 # gem1-mapper-spec input sizes (closed bars): D1 250, H4 250, H1 300, M15 (session ranges), W1 60, MN1 24
 LIMITS = {"MN1": 24, "W1": 60, "D1": 250, "H4": 250, "H1": 300, "M15": 1500}
+# D-70 intraday mode (the owner's default): zones reachable within one session ATR are chained first
+INTRADAY_REACH_ATR = 1.0
+INTRADAY_LINK_BARS = 3
 MAX_ALERTS = 8
 
 
@@ -38,6 +41,7 @@ class MapperInput:
     tick: float = 0.01
     decimals: int = 2
     gates: tuple[int, int, int] = (65, 50, 40)
+    mode: str = "strict"  # "strict" = GEM1 to the letter; "intraday" = D-70
 
 
 @dataclass
@@ -99,8 +103,17 @@ def _best(pools: list[Pool]) -> Pool | None:
     return max(pools, key=lambda p: (p.lps, TF_RANK[p.tf], -int(p.id[4:])), default=None)
 
 
-def derive_bias(registry: list[Pool], price: float, d1: list[Bar], hier: dict) -> dict:
-    """2B: liquidity-first bias. Returns {'bias': buy|sell|None, 'reason', 'conflict', 'tie_break', ...}."""
+def _hier_bias(hier: dict) -> str | None:
+    for k in ("ITH", "LTH"):
+        if hier.get(k) in ("bullish", "bearish"):
+            return "buy" if hier[k] == "bullish" else "sell"
+    return None
+
+
+def derive_bias(registry: list[Pool], price: float, d1: list[Bar], hier: dict, resolve: bool = False) -> dict:
+    """2B: liquidity-first bias. Returns {'bias': buy|sell|None, 'reason', 'conflict', 'tie_break', ...}.
+    `resolve` (intraday mode, D-70): a tie, an empty side or an LTH+ITH conflict is not a dead end — 2B says the
+    bias hierarchy (LTH/ITH/STH) resolves it via 2C, so the hierarchy direction is used."""
     live = live_pools(registry)
     up = _best([p for p in live if p.price > price])
     down = _best([p for p in live if p.price < price])
@@ -109,6 +122,8 @@ def derive_bias(registry: list[Pool], price: float, d1: list[Bar], hier: dict) -
            "top_up": up.id if up else None, "top_down": down.id if down else None}
     if not up and not down:
         out["reason"] = "no_untouched_pools"
+        if resolve and _hier_bias(hier):
+            out.update(bias=_hier_bias(hier), reason=None, resolved_by="hierarchy")
         return out
     if up and down and abs(up.lps - down.lps) <= 10:
         if TF_RANK[up.tf] != TF_RANK[down.tf]:
@@ -117,12 +132,17 @@ def derive_bias(registry: list[Pool], price: float, d1: list[Bar], hier: dict) -
             cand, out["tie_break"] = ("buy" if narrative == "bullish" else "sell"), "d1_narrative"
         else:
             out["reason"] = "bias_tie"
+            if resolve and _hier_bias(hier):
+                out.update(bias=_hier_bias(hier), reason=None, resolved_by="hierarchy")
             return out
     else:
         cand = "buy" if up and (not down or up.lps > down.lps) else "sell"
     out["conflict"] = narrative != "neutral" and (narrative == "bullish") != (cand == "buy")
     opposing = "bearish" if cand == "buy" else "bullish"
     if hier["LTH"] == opposing and hier["ITH"] == opposing:
+        if resolve:
+            out.update(bias="sell" if cand == "buy" else "buy", conflict=True, resolved_by="hierarchy")
+            return out
         out["reason"] = "bias_conflict_htf"
         return out
     out["bias"] = cand
@@ -225,7 +245,8 @@ def build_map(inp: MapperInput) -> MapResult:
     reach = 0.4 * s_atr
     # STEP 2
     hier = bias_hierarchy(d1, h4, h1)
-    b = derive_bias(registry, price, d1, hier)
+    intraday_mode = inp.mode == "intraday"
+    b = derive_bias(registry, price, d1, hier, resolve=intraday_mode)
     meta.update({"session_atr": s_atr, "session_atr_fallback": s_fb, "bias_derivation": b,
                  "dealing_range": {"high": rng.high, "low": rng.low, "eq": rng.eq}})
     if b["bias"] is None:
@@ -252,9 +273,28 @@ def build_map(inp: MapperInput) -> MapResult:
     gaps = opening_gaps(sym, m15, h1, now)
     mid_open = lv.day_open_at(m15, ny_midnight(now))
     week_open = lv.day_open_at(h1, week_start(now))
+    def beyond(c: ch.Candidate) -> float | None:
+        z = c.zone
+        cand = [p for p in live if (p.price > z.high if bias == "buy" else p.price < z.low)]
+        near = min(cand, key=lambda p: abs(p.price - z.anchor), default=None)
+        return near.price if near else (primary.price if primary else None)
+
+    def ladder_ok(c: ch.Candidate) -> bool:  # Step 8 tp1/tp2 check, applied before chaining in intraday mode
+        tp1, tp2 = beyond(c), primary.price if primary else None
+        if tp1 is None or tp2 is None:
+            return False
+        if bias == "buy":
+            return c.zone.high < tp1 <= tp2
+        return c.zone.low > tp1 >= tp2
+
     # STEP 7 — chains
-    linked, unlinked = ch.candidates(pdas, bars, registry, bias, price, hier["LTH"], hier["ITH"])
-    chains = ch.assign_chains(linked, inp.gates)
+    linked, unlinked = ch.candidates(pdas, bars, registry, bias, price, hier["LTH"], hier["ITH"],
+                                     window=INTRADAY_LINK_BARS if intraday_mode else 2, keep_touched=intraday_mode)
+    sel_reach = INTRADAY_REACH_ATR * s_atr
+    if intraday_mode:
+        chains = ch.assign_intraday([c for c in linked if ladder_ok(c)], inp.gates, price, sel_reach, bias)
+    else:
+        chains = ch.assign_chains(linked, inp.gates)
     for name, c in chains.items():
         c.gen.generated_pda_id = name
     if "CHAIN_A" in chains:
@@ -284,12 +324,6 @@ def build_map(inp: MapperInput) -> MapResult:
             "linked_pda_id_if_already_swept": None,
         }
 
-    def beyond(c: ch.Candidate) -> float | None:
-        z = c.zone
-        cand = [p for p in live if (p.price > z.high if bias == "buy" else p.price < z.low)]
-        near = min(cand, key=lambda p: abs(p.price - z.anchor), default=None)
-        return near.price if near else (primary.price if primary else None)
-
     key_zones, zkeys = [], {}
     for name in ("CHAIN_A", "CHAIN_B", "CHAIN_C"):
         c = chains.get(name)
@@ -297,7 +331,11 @@ def build_map(inp: MapperInput) -> MapResult:
             continue
         z = c.zone
         ztype = ch.ZONE_TYPE[z.kind]
-        horizon = "SWING_HTF" if (abs(z.anchor - price) > reach or c.score >= 80) else "INTRADAY"
+        if intraday_mode:
+            dist = ch.distance(c, price, bias)
+            horizon = "INTRADAY" if dist is not None and dist <= sel_reach else "SWING_HTF"
+        else:
+            horizon = "SWING_HTF" if (abs(z.anchor - price) > reach or c.score >= 80) else "INTRADAY"
         zkeys[name] = zone_key(sym, c.tf, ztype, z.formed_at, bias)
         key_zones.append({
             "id": name, "timeframe": c.tf, "direction": bias, "zone_type": ztype,
@@ -393,8 +431,12 @@ def build_map(inp: MapperInput) -> MapResult:
                  "struct_hash": hashlib.sha256(struct.encode()).hexdigest()[:16],
                  "primary_dol": primary.price if primary else None, "final_lrlr": final.price if final else None})
     meta["hash"] = hashlib.sha256(json.dumps(out, separators=(",", ":")).encode()).hexdigest()[:16]
-    if failed:
+    if failed and not intraday_mode:
         return MapResult(False, f"verification_failed:{failed[0]}", out, meta, failed)
+    if failed:  # intraday mode: Step 8 "resolve before output" — zones were already filtered, the rest is noted
+        meta["warnings"] = failed
+    if b.get("resolved_by"):
+        meta.setdefault("warnings", []).append(f"bias_resolved_by_{b['resolved_by']}")
     return MapResult(True, None, out, meta)
 
 

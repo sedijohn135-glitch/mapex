@@ -209,3 +209,31 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
     about one request per timeframe. Deal lists are clamped to one week.
   - **Fallback.** The Remote MCP stays as the fallback when the Open API variables are absent. Switching backend
     forgets any learned relative-points scale.
+- **D-70** Intraday chain mode, the owner's explicit choice and the default. `CHAIN_MODE=strict` restores GEM1 to the
+  letter.
+  - **Why.** A 30-day `/replay XAUUSD` in strict mode gave 0 trades, with 129/504 valid maps. The owner's proven
+    workflow is this: GEM1 (Gemini) gives CHAIN_A/B near price; alarms fire when price reaches them; GEM2 gets the
+    JSON plus M15/M5/M1 and returns a setup, which worked in about 80% of cases. That needs a reachable chain in
+    every kill zone.
+  - **What strict mode did.** H1 pools can reach at most LPS 55 (about 45 once swept), so zones born from intraday
+    sweeps never passed the 65/50 gates. Chains were D1/H4 zones days or weeks away. Also, 75% of maps were refused
+    outright (bias tie / LTH+ITH conflict / one failed Step 8 check), and a map with only CHAIN_B was rejected by
+    GEM2 preflight (no active_causal_chain). The live XAUUSD map was in exactly that state.
+  - **Bias.** A tie, an empty side, or an LTH+ITH conflict is resolved by the bias hierarchy. This is what 2B says
+    ("bias hierarchy (LTH/ITH/STH) resolves via 2C"), instead of refusing the map.
+  - **Linkage.** The sweep may be up to 3 bars before the displacement (GEM1: 2).
+  - **Touched zones.** A touched zone stays a candidate, with its unmitigated score at 0 as 1B scores it, until a
+    bar closes beyond its far edge. Otherwise the zone vanished from the next hourly map just as price entered it,
+    and the GEM2 sequence was lost.
+  - **Chain selection.** Zones whose tp1/tp2 ladder is valid and which price can reach within 1 × session ATR come
+    first. They are ranked by the 1C priority (generating LPS, displacement, TF, type, unmitigated), with an LPS
+    floor of 20. Empty CHAIN_A/B slots take the best remaining zones, so CHAIN_A (the GEM2 thesis root) exists
+    whenever a zone is linked. CHAIN_C keeps the GEM1 rule.
+  - **Step 8.** "Resolve before output": the zone-level checks are enforced before chaining. Map-level
+    inconsistencies are kept as `meta.warnings` instead of discarding the whole map.
+  - **Unchanged.** GEM2 and every execution law: 100/100 only, Type 7 sweeps, SL always, one order, guards,
+    MAPEX label.
+  - **Replay diagnostics.** `/replay` now reports kill zones that had a reachable chain, the top map-refusal
+    reasons, the GEM2 steps reached (RAID/SHIFT/GAP/RETURN/CONFIRMED) and the top reasons sequences stopped.
+  - **Synthetic markets.** Strict published 32–39/55 maps with a reachable chain in 0–2/55. Intraday published
+    55/55 with a reachable chain in 37–50/55.

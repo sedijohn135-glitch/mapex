@@ -16,7 +16,7 @@ MAPS_KEPT = 72
 def run_mapper(store: Store, s: Settings, symbol: str, bars: dict, price: float, now: float) -> MapResult:
     """GEM1 run; a map is *published* only when Step 8 passes (invalid maps are kept for audit only)."""
     res = build_map(MapperInput(symbol, now, price, bars, s.tick(symbol), s.display_decimals.get(symbol, 2),
-                                s.chain_gates))
+                                s.chain_gates, s.chain_mode))
     with store.tx():
         cur = store.execute(
             "INSERT INTO maps(symbol, created_at, json, bias, valid, hash, struct_hash, reason) "
