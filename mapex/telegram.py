@@ -1,4 +1,5 @@
-"""Telegram: entry notifications + critical alerts only (Albanian, parse_mode=HTML, every dynamic value escaped),
+"""Telegram: entry notifications, accepted Gemini maps (the owner's request, D-75) and critical alerts only (Albanian,
+parse_mode=HTML, every dynamic value escaped),
 an outbox with dedupe, 4096 split, 429 retry_after, and owner-only commands."""
 
 from __future__ import annotations
@@ -81,6 +82,18 @@ def msg_token_expired(detail: str | None = None, openapi: bool = False) -> str:
     if detail:
         text += f"\nDetaj: <code>{e(detail[:200])}</code>"
     return text
+
+
+def msg_map_accepted(symbol: str, m: dict, valid_until: str, warnings: int) -> str:
+    lines = [f"🗺️ <b>Harta e Gemini u pranua — {e(symbol)} {e(m['strategic_bias'].upper())}</b>"]
+    for z in m["key_zones"]:
+        reach = "afër" if z["time_horizon"] == "INTRADAY" else "larg"
+        lines.append(f"{e(z['id'])} {e(z['zone_low'])}–{e(z['zone_high'])} ({reach}) · TP1 {e(z['tp1'])} · "
+                     f"TP2 {e(z['tp2'])}")
+    lines.append(f"Vlen deri {e(valid_until)} NY. MAPEX e ndjek dhe hyn vetëm me 100/100.")
+    if warnings:
+        lines.append(f"⚠️ MAPEX bëri {warnings} riparime në hartë (Gemini i sheh te përgjigjja).")
+    return "\n".join(lines)
 
 
 def msg_gemini_map(symbol: str, invalidated: str | None = None) -> str:
