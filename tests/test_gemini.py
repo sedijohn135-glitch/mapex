@@ -13,6 +13,7 @@ from mapex.core.timeutil import TF_SECONDS
 from mapex.ctrader.client import Quote
 from mapex.gemini_map import MapRejected, accept, parse
 from mapex.main import App
+from mapex.mapper.engine import MapResult
 from mapex.mcp_api import ICT_TIMES, ict_clock
 from mapex.pipeline import current_map, run_executor, save_map
 from tests.helpers import ny_ts
@@ -136,6 +137,7 @@ def test_mcp_needs_the_token_and_gives_gemini_live_data(tmp_path, mkt):
         assert {"mapex_entry_window", "ict_now", "ict_next"} <= set(snap)
         got = call(c, "market_candles", symbol="XAUUSD", timeframe="m15", count=3)
         assert len(got["bars"]) == 3 and got["bars"][-1][4] == round(bars["M15"][-1].c, 2)
+        assert len(got["bars"][-1][0]) == 16 and got["bars"][-1][0][4] == "-"  # "YYYY-MM-DD HH:MM" (D1 needs dates)
         assert call(c, "submit_gem1_map", symbol="XAUUSD", gem1_json="{}")["accepted"] is False
         ok = call(c, "submit_gem1_map", symbol="XAUUSD", gem1_json=json.dumps(gem1(price, atr)))
         assert ok["accepted"] and ok["zones"][0]["id"] == "CHAIN_A"
@@ -152,6 +154,12 @@ def test_mcp_is_closed_without_a_token_and_mapex_mapper_is_off(tmp_path, mkt):
         assert rpc(c, "tools/list").status_code == 503
     asyncio.run(app.map_symbol("XAUUSD", now))
     assert current_map(app.store, "XAUUSD")[0] is None  # Gemini owns the map: no built-in GEM1 run
+    bars, _, price, atr = mkt
+    res = accept(gem1(price, atr), "XAUUSD", app.s, bars, price, now)
+    save_map(app.store, "XAUUSD", now, MapResult(True, None, res.json, res.meta))  # a map from the built-in mapper
+    assert current_map(app.store, "XAUUSD")[0] is not None
+    again = service(tmp_path, mkt)  # restart with MAP_SOURCE=gemini: the built-in map stops trading
+    assert current_map(again.store, "XAUUSD")[0] is None
     assert config.load({"MAP_SOURCE": "mapex"}).map_source == "mapex"
     assert any("MAP_SOURCE" in x for x in config.load({"MAP_SOURCE": "x"}).errors)
 

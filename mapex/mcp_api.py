@@ -148,7 +148,8 @@ def build(app):
 
         s_atr, _ = lv.session_atr(b["M15"], b["H1"], now)
         return {
-            "symbol": sym, "time_ny": fmt_ny(now), "weekday_ny": ny(now).strftime("%A"),
+            "symbol": sym, "date_ny": f"{ny(now):%Y-%m-%d}", "time_ny": fmt_ny(now),
+            "weekday_ny": ny(now).strftime("%A"),
             "bid": f(q.bid) if q else None, "ask": f(q.ask) if q else None, "spread": f(q.spread) if q else None,
             "session": current_session(now), "mapex_entry_window": killzone(now), **ict_clock(sym, now),
             "session_atr": f(s_atr), "d1_atr14": f(pr.atr(b["D1"], 14)) if len(b["D1"]) > 14 else None,
@@ -171,7 +172,7 @@ def build(app):
         rows = (await bars(sym, now, (tf,)))[tf][-max(1, min(count, MAX_CANDLES)):]
         return {"symbol": sym, "timeframe": tf, "time_zone": "America/New_York",
                 "columns": ["time_ny", "open", "high", "low", "close"],
-                "bars": [[fmt_ny(x.t), round(x.o, dec), round(x.h, dec), round(x.l, dec), round(x.c, dec)]
+                "bars": [[f"{ny(x.t):%Y-%m-%d %H:%M}", *(round(v, dec) for v in (x.o, x.h, x.l, x.c))]
                          for x in rows]}
 
     @server.tool()
