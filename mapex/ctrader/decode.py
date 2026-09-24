@@ -117,7 +117,8 @@ def parse_mcp_config(raw: str) -> tuple[str, str]:
     if isinstance(obj, str):
         text = obj
     m = re.match(r"^(?:Bearer\s+)?(\S+)$", text, re.I)
-    if m and "." in m.group(1) and not m.group(1).startswith("{"):
+    bare = m and re.fullmatch(r"[A-Za-z0-9_\-.=]{40,}", m.group(1))
+    if m and ("." in m.group(1) or bare) and not m.group(1).startswith("{"):
         return DEFAULT_URL, m.group(1)
     urls = re.findall(r"https://[^\s\"',}]+", text)
     tok = _TOKEN_RE.search(text.split("Bearer", 1)[-1])
