@@ -224,3 +224,50 @@ def test_every_timeframe_fetched_from_broker_never_aggregated():
     run(go())
     periods = {a["period"] for t, a in fake.calls if t == "get_trendbars"}
     assert periods == {"MN_1", "W_1", "D_1", "H_4", "H_1", "M_15", "M_5", "M_1"}  # A3
+
+
+def test_lost_session_is_reinitialised_and_retried():
+    fake = FakeCTrader()
+    fake.fail_symbol[101] = 4  # four "Session not found" answers in a row, then fine
+
+    async def go():
+        c = client_for(fake)
+        return await c.calibrate("BTCUSD", [2], [25000, 240000])
+
+    assert run(go()) == 2
+
+
+def test_each_call_opens_its_own_session_in_its_own_task():
+    """Railway log: a session opened by one loop and closed by another cancelled uvicorn (D-64)."""
+    fake = FakeCTrader()
+    fake.fail_symbol[101] = 2
+    inner = connector_for(build_server(fake))
+    opened = []
+
+    def connect(url, token):
+        opened.append(asyncio.current_task())
+        return inner(url, token)
+
+    async def go():
+        c = CTraderClient("https://fake/trading/mcp", "tok.en.x", connector=connect)
+        tasks = [asyncio.create_task(c.calibrate(n, [d], b)) for n, d, b in
+                 (("BTCUSD", 2, [25000, 240000]), ("XAUUSD", 3, [1500, 14000]))]
+        return await asyncio.gather(*tasks), tasks
+
+    digits, tasks = run(go())
+    assert digits == [2, 3] and set(opened) == set(tasks)
+    assert len(opened) == len(fake.calls)  # one session per call (tools are listed inside the first ones)
+
+
+def test_mutation_session_error_is_never_resent():
+    fake = FakeCTrader()
+    fake.fail_once["create_order"] = "Session not found; re-initialize"
+
+    async def go():
+        c = client_for(fake)
+        await c.load_symbols()
+        with pytest.raises(TransportError):
+            await c.call("create_order", {"symbolId": 41, "orderType": "MARKET", "tradeSide": "BUY", "volume": 100})
+
+    run(go())
+    assert [t for t, _ in fake.calls].count("create_order") == 1

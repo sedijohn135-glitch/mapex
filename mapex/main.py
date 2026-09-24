@@ -166,19 +166,29 @@ class App:
         except CTraderError as exc:
             self.last_error = f"connect: {exc}"
             return
-        for sym in self.s.symbols:
+        await self.calibrate_symbols(self.s.symbols)
+
+    async def calibrate_symbols(self, symbols: list[str], announce: bool = False) -> None:
+        """Calibrate each symbol on a live bid; a transient failure keeps it disabled until the next heartbeat."""
+        for sym in symbols:
             cands = [self.s.price_digits.get(sym), config.DEFAULT_PIP_DIGITS.get(sym)]
             try:
                 await self.client.calibrate(sym, cands, self.s.price_bands.get(sym, [0, 1e12]))
-                self.active.append(sym)
-                self.disabled.pop(sym, None)
             except DecodeError as exc:
                 self.disabled[sym] = f"çmimet nuk u dekoduan (bid i marrë: {self.client.raw_bid.get(sym)})"
                 log.warning("%s calibration: %s", sym, exc)
                 guards.trip(self.store, f"çmimet nuk u dekoduan ({sym}: bid i marrë "
                                         f"{self.client.raw_bid.get(sym)})", self.clock())
+                continue
             except CTraderError as exc:
-                self.disabled[sym] = str(exc)
+                self.disabled[sym] = str(exc)[:160]
+                continue
+            if sym not in self.active:
+                self.active.append(sym)
+            if self.disabled.pop(sym, None) is not None and announce:
+                lot = self.s.lots.get(sym)
+                tail = f" · Lot {lot:.2f}" if lot else " (pa LOT_ → s'tregton)"
+                self.store.outbox_add(f"active:{sym}:{int(self.clock())}", f"✅ {sym} u aktivizua{tail}")
 
     def symbol_status(self) -> dict[str, str]:
         """Why each configured symbol will not trade (empty when it will)."""
@@ -315,6 +325,8 @@ class App:
             await self.client.call("get_version")
             if not self.active:
                 await self.connect()
+            elif self.disabled:  # retry symbols a transient error disabled at start-up
+                await self.calibrate_symbols([s for s in self.s.symbols if s in self.disabled], announce=True)
         except AuthError:
             self.on_auth_error()
         except CTraderError as exc:

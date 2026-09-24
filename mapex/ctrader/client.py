@@ -1,7 +1,8 @@
 """cTrader Remote MCP client (client side only, mcp==2.2.0).
 
 Retries only read tools; a mutation is sent exactly once and a timeout surfaces as TransportError so the caller
-reconciles instead of resending (broker-execution §3.5).
+reconciles instead of resending (broker-execution §3.5). Every call opens, uses and closes its own MCP session inside
+the calling task (D-64): the server drops idle sessions, and anyio scopes must never be closed from another task.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -32,6 +33,7 @@ HISTORICAL_TOOLS = {"get_trendbars", "get_order_history", "get_deals"}
 MUTATIONS = {"create_order", "amend_order", "cancel_order", "amend_position", "close_position"}
 MAX_WINDOW_S = 720 * 3600  # Q-R7
 READ_RETRIES = 2
+SESSION_RETRIES = 5  # a read that hits "Session not found; re-initialize" is retried on a new session
 
 
 class CTraderError(Exception):
@@ -113,8 +115,6 @@ class CTraderClient:
         self.connector = connector
         self.clock = clock
         self.call_timeout = call_timeout
-        self.stack: AsyncExitStack | None = None
-        self.session = None
         self.tools: dict[str, set[str]] = {}
         self.symbol_map: dict[str, dict] = {}
         self.digits: dict[str, int] = {}  # spot encoding, calibrated on a live bid
@@ -127,7 +127,6 @@ class CTraderClient:
         self.auth_error_since: float | None = None
         self.last_error: str | None = None
         self.skew_s = 0.0
-        self.lock = asyncio.Lock()
 
     # ------------------------------------------------------------- connection
     @property
@@ -139,37 +138,17 @@ class CTraderClient:
         return "create_order" in self.tools
 
     async def set_credentials(self, url: str, token: str) -> None:
-        """Hot-swap (Telegram /ctrader): drop the session, the next call reconnects."""
-        await self.close()
+        """Hot-swap (Telegram /ctrader): the next call connects with the new token and re-reads its tools."""
         self.url, self.token = url, token
+        self.tools = {}
         self.auth_error_since = None
 
     async def close(self) -> None:
-        if self.stack is not None:
-            try:
-                await self.stack.aclose()
-            except Exception as exc:  # noqa: BLE001 — closing a dead session must never raise
-                log.debug("close: %s", type(exc).__name__)
-        self.stack, self.session = None, None
-
-    async def _ensure(self):
-        if self.session is not None:
-            return self.session
-        if not self.configured:
-            raise AuthError("cTrader configuration missing")
-        stack = AsyncExitStack()
-        try:
-            session = await asyncio.wait_for(stack.enter_async_context(self.connector(self.url, self.token)),
-                                             self.call_timeout)
-            listed = await asyncio.wait_for(session.list_tools(), self.call_timeout)
-        except BaseException as exc:
-            await stack.aclose()
-            raise self._wrap(exc) from None
-        self.tools = {t.name: set((t.input_schema or {}).get("properties", {}).keys()) for t in listed.tools}
-        self.stack, self.session = stack, session
-        return session
+        """Nothing to close: sessions live only inside one call (D-64)."""
 
     def _wrap(self, exc: BaseException) -> CTraderError:
+        while isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1:
+            exc = exc.exceptions[0]
         if isinstance(exc, CTraderError):
             return exc
         text = f"{type(exc).__name__}: {exc}".replace(self.token or "\0", "***")
@@ -193,8 +172,8 @@ class CTraderClient:
     async def call(self, tool: str, args: dict | None = None) -> dict:
         args = dict(args or {})
         mutation = tool in MUTATIONS
-        attempts = 1 if mutation else READ_RETRIES + 1
-        for attempt in range(attempts):
+        attempt = 0
+        while True:
             try:
                 return await self._call_once(tool, args)
             except AuthError as exc:
@@ -202,25 +181,31 @@ class CTraderClient:
                 self.last_auth_detail = str(exc).replace(self.token or "\0", "***")[:200]
                 raise
             except ToolError as exc:
-                if not mutation and RATE_RE.search(str(exc)) and attempt + 1 < attempts:
+                if not mutation and RATE_RE.search(str(exc)) and attempt < READ_RETRIES:
                     await asyncio.sleep(0.5 * 2**attempt)
+                    attempt += 1
                     continue
                 raise
-            except TransportError:
-                await self.close()
-                if mutation or attempt + 1 >= attempts:
+            except TransportError as exc:
+                limit = SESSION_RETRIES if SESSION_RE.search(str(exc)) else READ_RETRIES
+                if mutation or attempt >= limit:
                     raise
-                await asyncio.sleep(0.5 * 2**attempt)
-        raise TransportError("unreachable")
+                await asyncio.sleep(min(0.3 * 2**attempt, 3.0))
+                attempt += 1
 
     async def _call_once(self, tool: str, args: dict) -> dict:
-        async with self.lock:
-            session = await self._ensure()
-        if self.tools and tool not in self.tools:
-            raise ToolError(f"tool {tool} not offered by this connection (data-only token?)")
+        if not self.configured:
+            raise AuthError("cTrader configuration missing")
         await (self.historical if tool in HISTORICAL_TOOLS else self.general).acquire()
         try:
-            res = await asyncio.wait_for(session.call_tool(tool, self._filter_args(tool, args)), self.call_timeout)
+            async with asyncio.timeout(self.call_timeout), self.connector(self.url, self.token) as session:
+                if not self.tools:
+                    listed = await session.list_tools()
+                    self.tools = {t.name: set((t.input_schema or {}).get("properties", {}).keys())
+                                  for t in listed.tools}
+                if tool not in self.tools:
+                    raise ToolError(f"tool {tool} not offered by this connection (data-only token?)")
+                res = await session.call_tool(tool, self._filter_args(tool, args))
         except BaseException as exc:
             if isinstance(exc, asyncio.CancelledError):
                 raise

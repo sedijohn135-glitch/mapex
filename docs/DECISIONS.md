@@ -137,3 +137,11 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
   display floats). After a fill, the SL distance the broker actually applied is compared with the intended one; a
   power-of-ten mismatch is stored as `points_digits:<SYMBOL>` and used from the next order on (the current one is
   exactified by the amend + read-back as always). `MAX_SLIPPAGE_POINTS` keeps its price value when the digits change.
+- **D-63** A symbol whose start-up calibration failed on a transient error (e.g. "Session not found") stays disabled
+  only until the next heartbeat (5 min), which calibrates it again and sends "✅ <SYMBOL> u aktivizua". Read tools
+  that hit a session error are retried up to 5 times on a new session. Mutations are still sent once: a session
+  error on `create_order` goes to reconciliation by comment, never to a resend.
+- **D-64** One MCP session per call, opened and closed inside the calling task. The Railway logs showed the server
+  dropping idle sessions (repeated "Session termination failed: 404") and a shared session closed from another loop
+  cancelling uvicorn (anyio cancel scopes belong to the task that opened them). The tools list is read once per
+  token. The cost is one handshake per call, well inside the rate limits at MAPEX's call rate.
