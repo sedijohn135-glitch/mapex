@@ -162,3 +162,11 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
   TCP/WebSocket, token refresh, event stream) and bring new failure modes. It becomes the plan only if candles or
   orders still fail after D-65, as a second connection behind the same `CTraderClient` interface, selected by
   Railway variables. The secrets would then go only into Railway, never into chat or code.
+- **D-67** Third round of Railway logs: with the string timestamps accepted, almost every `get_trendbars` still ended
+  in "Session not found" after all retries, while quotes kept working. Loading history opens about 80 requests per
+  symbol (720 h chunks), and each request had its own new session. So the server saw bursts of sessions, alongside
+  the quote, manage and reconcile loops' own sessions, and it drops or evicts sessions under that load. Now one MCP
+  session is reused for every request. It is opened, used and closed only by a dedicated owner task, and requests
+  go out one at a time through a queue (anyio scopes still never cross tasks, D-64). A lost session is reopened and
+  the request resent (D-65). A timeout closes the session and is never resent. Any other service using the same
+  cTrader token can still take MAPEX's session; MAPEX then reopens it.

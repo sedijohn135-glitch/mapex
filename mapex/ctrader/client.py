@@ -1,8 +1,8 @@
 """cTrader Remote MCP client (client side only, mcp==2.2.0).
 
-Retries only read tools; a mutation is sent exactly once and a timeout surfaces as TransportError so the caller
-reconciles instead of resending (broker-execution §3.5). Every call opens, uses and closes its own MCP session inside
-the calling task (D-64): the server drops idle sessions, and anyio scopes must never be closed from another task.
+Retries only read tools; a mutation times out into TransportError so the caller reconciles instead of resending
+(broker-execution §3.5) — only a "Session not found" rejection, which runs nothing, is resent (D-65). One reused MCP
+session is owned by a single task that serves every request in turn (D-67), so anyio scopes never cross tasks (D-64).
 """
 
 from __future__ import annotations
@@ -13,10 +13,12 @@ import logging
 import re
 import time
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+
+from mcp.shared.exceptions import MCPError
 
 from mapex.core.primitives import Bar
 from mapex.core.timeutil import PERIODS
@@ -34,7 +36,7 @@ HISTORICAL_TOOLS = {"get_trendbars", "get_order_history", "get_deals"}
 MUTATIONS = {"create_order", "amend_order", "cancel_order", "amend_position", "close_position"}
 MAX_WINDOW_S = 720 * 3600  # Q-R7
 READ_RETRIES = 2
-SESSION_RETRIES = 5  # "Session not found; re-initialize" is resent on the same session (D-65)
+SESSION_RETRIES = 5  # "Session not found; re-initialize": the session is reopened and the request resent (D-65)
 BACKOFF_S = 0.3
 
 
@@ -126,10 +128,19 @@ def _types(prop: dict | None) -> set[str]:
 
 def _lost_session(exc: BaseException) -> bool:
     """A JSON-RPC answer "Session not found" (HTTP 404 on the session id): the server rejected the request before
-    any tool ran, so it is safe to send it again on the same session — orders included (MCP spec, D-65)."""
-    from mcp.shared.exceptions import MCPError
-
+    any tool ran, so it is safe to send it again on a reopened session — orders included (MCP spec, D-65)."""
     return isinstance(exc, MCPError) and bool(LOST_SESSION_RE.search(str(exc.message)))
+
+
+async def _drop(stack: AsyncExitStack) -> None:
+    """Close a session from the task that opened it; a dead session must never raise."""
+    try:
+        await stack.aclose()
+    except BaseException as exc:  # noqa: BLE001
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
+        log.debug("close: %s", type(exc).__name__)
 
 
 def _classify(text: str) -> CTraderError:
@@ -161,6 +172,9 @@ class CTraderClient:
         self.auth_error_since: float | None = None
         self.last_error: str | None = None
         self.skew_s = 0.0
+        self.sessions_opened = 0
+        self._queue: asyncio.Queue | None = None
+        self._owner: asyncio.Task | None = None
 
     # ------------------------------------------------------------- connection
     @property
@@ -172,13 +186,72 @@ class CTraderClient:
         return "create_order" in self.tools
 
     async def set_credentials(self, url: str, token: str) -> None:
-        """Hot-swap (Telegram /ctrader): the next call connects with the new token and re-reads its tools."""
+        """Hot-swap (Telegram /ctrader): the session is reopened with the new token and its tools re-read."""
+        await self.close()
         self.url, self.token = url, token
         self.tools, self.schemas, self.ms_text = {}, {}, set()
         self.auth_error_since = None
 
     async def close(self) -> None:
-        """Nothing to close: sessions live only inside one call (D-64)."""
+        """Stop the session owner; it closes the session in its own task."""
+        owner, self._owner, self._queue = self._owner, None, None
+        if owner is not None and not owner.done() and owner.get_loop() is asyncio.get_running_loop():
+            owner.cancel()
+            await asyncio.gather(owner, return_exceptions=True)
+
+    def _mailbox(self) -> asyncio.Queue:
+        loop = asyncio.get_running_loop()
+        if self._owner is None or self._owner.done() or self._owner.get_loop() is not loop:
+            self._queue = asyncio.Queue()
+            self._owner = loop.create_task(self._serve(self._queue), name="ctrader-session")
+        return self._queue
+
+    async def _serve(self, queue: asyncio.Queue) -> None:
+        """The only task that opens, uses and closes the MCP session. Requests go out one at a time on one reused
+        session: many short sessions made the live server answer "Session not found" (Railway logs, D-67).
+        A lost session is reopened and the request resent (D-65); a timeout is never resent."""
+        stack: AsyncExitStack | None = None
+        session = None
+        fut = None
+        try:
+            while True:
+                tool, args, fut = await queue.get()
+                for attempt in range(SESSION_RETRIES + 1):
+                    if fut.done():  # the caller gave up before its request went out
+                        break
+                    try:
+                        async with asyncio.timeout(self.call_timeout):
+                            if session is None:
+                                stack = AsyncExitStack()
+                                session = await stack.enter_async_context(self.connector(self.url, self.token))
+                                self.sessions_opened += 1
+                                if not self.tools:
+                                    self._load_tools(await session.list_tools())
+                            if tool not in self.tools:
+                                raise ToolError(f"tool {tool} not offered by this connection (data-only token?)")
+                            res = await session.call_tool(tool, self._fit_args(tool, self._filter_args(tool, args)))
+                        if not fut.done():
+                            fut.set_result(res)
+                        break
+                    except Exception as exc:  # noqa: BLE001 — handed to the caller
+                        lost = _lost_session(exc)
+                        if lost or not isinstance(exc, ToolError | MCPError):  # the session itself is suspect
+                            if stack is not None:
+                                await _drop(stack)
+                            stack = session = None
+                        if lost and attempt < SESSION_RETRIES:
+                            await asyncio.sleep(BACKOFF_S * (attempt + 1))
+                            continue
+                        if not fut.done():
+                            fut.set_exception(exc)
+                        break
+        finally:
+            closed = TransportError("cTrader session closed")
+            for pending in [fut] + [queue.get_nowait()[2] for _ in range(queue.qsize())]:
+                if pending is not None and not pending.done():
+                    pending.set_exception(closed)
+            if stack is not None:
+                await _drop(stack)
 
     def _wrap(self, exc: BaseException) -> CTraderError:
         while isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1:
@@ -227,16 +300,6 @@ class CTraderClient:
                     if "string" in _types(prop) and re.search(r"milli|epoch|unix", hint) and "iso" not in hint:
                         self.ms_text.add(tool)
 
-    async def _request(self, fn):
-        """One request on the open session; a lost-session answer is resent on the same session (D-65)."""
-        for attempt in range(SESSION_RETRIES + 1):
-            try:
-                return await fn()
-            except Exception as exc:  # noqa: BLE001 — anything else is wrapped by the caller
-                if attempt >= SESSION_RETRIES or not _lost_session(exc):
-                    raise
-                await asyncio.sleep(BACKOFF_S * (attempt + 1))
-
     async def call(self, tool: str, args: dict | None = None) -> dict:
         args = dict(args or {})
         mutation = tool in MUTATIONS
@@ -270,14 +333,10 @@ class CTraderClient:
         if not self.configured:
             raise AuthError("cTrader configuration missing")
         await (self.historical if tool in HISTORICAL_TOOLS else self.general).acquire()
+        fut = asyncio.get_running_loop().create_future()
+        self._mailbox().put_nowait((tool, args, fut))
         try:
-            async with asyncio.timeout(self.call_timeout), self.connector(self.url, self.token) as session:
-                if not self.tools:
-                    self._load_tools(await self._request(session.list_tools))
-                if tool not in self.tools:
-                    raise ToolError(f"tool {tool} not offered by this connection (data-only token?)")
-                sent = self._fit_args(tool, self._filter_args(tool, args))
-                res = await self._request(lambda: session.call_tool(tool, sent))
+            res = await fut
         except BaseException as exc:
             if isinstance(exc, asyncio.CancelledError):
                 raise

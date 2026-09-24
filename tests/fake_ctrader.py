@@ -36,6 +36,8 @@ class FakeCTrader:
         self.fail_once: dict[str, str] = {}
         self.fail_symbol: dict[int, int] = {}  # symbolId -> number of spot calls answered "Session not found"
         self.session_drops = 0  # the next N requests (any tool) are rejected with "Session not found", unexecuted
+        self.newest = 0  # evicting_connector: the only session the server still knows
+        self.evicted = 0  # requests rejected because a newer session replaced theirs
         self.ts_format: str | None = None  # None: numeric timestamps; "iso" | "ms": string timestamps (live server)
 
     # ------------------------------------------------------------ helpers
@@ -249,5 +251,35 @@ def connector_for(server):
 
     def connect(url, token):
         return Client(server)
+
+    return connect
+
+
+class _Guarded:
+    def __init__(self, client, fake, mine: int):
+        self.client, self.fake, self.mine = client, fake, mine
+
+    async def list_tools(self):
+        return await self.client.list_tools()
+
+    async def call_tool(self, name, args):
+        if self.mine != self.fake.newest:
+            self.fake.evicted += 1
+            raise lost_session()
+        return await self.client.call_tool(name, args)
+
+
+def evicting_connector(fake: FakeCTrader, server):
+    """A server that keeps only the newest session per token: requests on an older one get "Session not found"."""
+    from contextlib import asynccontextmanager
+
+    from mcp import Client
+
+    @asynccontextmanager
+    async def connect(url, token):
+        fake.newest += 1
+        mine = fake.newest
+        async with Client(server) as client:
+            yield _Guarded(client, fake, mine)
 
     return connect

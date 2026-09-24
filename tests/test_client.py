@@ -6,7 +6,7 @@ from mapex.core.timeutil import TF_SECONDS
 from mapex.ctrader.client import AuthError, CTraderClient, RateLimiter, ToolError, TransportError, parse_trendbar
 from mapex.data.candles import Candles, missing_bars
 from mapex.data.quotes import Quotes
-from tests.fake_ctrader import FakeCTrader, build_server, connector_for
+from tests.fake_ctrader import FakeCTrader, build_server, connector_for, evicting_connector
 
 
 def client_for(fake, **kw):
@@ -226,23 +226,17 @@ def test_every_timeframe_fetched_from_broker_never_aggregated():
     assert periods == {"MN_1", "W_1", "D_1", "H_4", "H_1", "M_15", "M_5", "M_1"}  # A3
 
 
-def test_lost_session_is_resent_on_the_same_session(monkeypatch):
+def test_lost_session_is_reopened_and_resent(monkeypatch):
     monkeypatch.setattr("mapex.ctrader.client.BACKOFF_S", 0)
     fake = FakeCTrader()
     fake.fail_symbol[101] = 4  # four "Session not found" answers in a row, then fine
-    inner = connector_for(build_server(fake))
-    opened = []
-
-    def connect(url, token):
-        opened.append(1)
-        return inner(url, token)
 
     async def go():
-        c = CTraderClient("https://fake/trading/mcp", "tok.en.x", connector=connect)
-        return await c.calibrate("BTCUSD", [2], [25000, 240000])
+        c = client_for(fake)
+        return await c.calibrate("BTCUSD", [2], [25000, 240000]), c
 
-    assert run(go()) == 2
-    assert len(opened) == 2  # get_symbols + get_spot_prices: the four rejections never opened a new session
+    digits, c = run(go())
+    assert digits == 2 and c.sessions_opened == 5  # the first session + one reopen per rejection
 
 
 def test_order_rejected_for_a_lost_session_is_resent_and_filled_once(monkeypatch):
@@ -284,11 +278,11 @@ def test_string_timestamps_follow_the_live_schema(monkeypatch):
             assert sent[0].endswith("Z") and sent[1:] == [str(start * 1000)] * 2
 
 
-def test_each_call_opens_its_own_session_in_its_own_task(monkeypatch):
-    """Railway log: a session opened by one loop and closed by another cancelled uvicorn (D-64)."""
-    monkeypatch.setattr("mapex.ctrader.client.BACKOFF_S", 0)
+def test_one_reused_session_owned_by_one_task_serves_every_caller():
+    """Railway logs: a session closed from another loop cancelled uvicorn (D-64), and bursts of short sessions
+    (~80 per symbol while loading history) were answered "Session not found" (D-67)."""
     fake = FakeCTrader()
-    fake.fail_symbol[101] = 2
+    fake.bars[("XAUUSD", "D1")] = [(1_700_000_000 + i * 86400, 2600, 2601, 2599, 2600.5) for i in range(400)]
     inner = connector_for(build_server(fake))
     opened = []
 
@@ -300,11 +294,27 @@ def test_each_call_opens_its_own_session_in_its_own_task(monkeypatch):
         c = CTraderClient("https://fake/trading/mcp", "tok.en.x", connector=connect)
         tasks = [asyncio.create_task(c.calibrate(n, [d], b)) for n, d, b in
                  (("BTCUSD", 2, [25000, 240000]), ("XAUUSD", 3, [1500, 14000]))]
-        return await asyncio.gather(*tasks), tasks
+        digits = await asyncio.gather(*tasks)
+        await asyncio.create_task(c.trendbars("XAUUSD", "D1", 1_700_000_000, 1_700_000_000 + 400 * 86400))
+        return digits, tasks, c._owner
 
-    digits, tasks = run(go())
-    assert digits == [2, 3] and set(opened) == set(tasks)
-    assert len(opened) == 4  # get_symbols + get_spot_prices per task; lost-session answers reuse the session
+    digits, tasks, owner = run(go())
+    assert digits == [2, 3] and opened == [owner] and owner not in tasks
+    assert len([t for t, _ in fake.calls if t == "get_trendbars"]) >= 14  # 720 h chunks, all on one session
+
+
+def test_server_keeping_only_the_newest_session_never_rejects_mapex():
+    fake = FakeCTrader()
+    connect = evicting_connector(fake, build_server(fake))
+
+    async def go():
+        c = CTraderClient("https://fake/trading/mcp", "tok.en.x", connector=connect)
+        await asyncio.gather(*(c.calibrate(n, [d], b) for n, d, b in
+                               (("BTCUSD", 2, [25000, 240000]), ("XAUUSD", 3, [1500, 14000]))),
+                             *(c.call("get_version") for _ in range(5)))
+
+    run(go())
+    assert fake.evicted == 0
 
 
 def test_order_session_error_inside_a_tool_result_is_never_resent():
