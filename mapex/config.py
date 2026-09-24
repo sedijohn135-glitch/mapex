@@ -58,6 +58,7 @@ class Settings:
     display_decimals: dict[str, int] = field(default_factory=lambda: dict(DEFAULTS["DISPLAY_DECIMALS"]))
     notify_exits: bool = False
     chain_gates: tuple[int, int, int] = CHAIN_GATES
+    chain_mode: str = "intraday"  # D-70: the owner's choice; CHAIN_MODE=strict = GEM1 to the letter
     map_max_age_h: float = 6.0
     no_entry_before_close_min: float = 30.0
     data_dir: Path = Path("./data")
@@ -173,6 +174,11 @@ def load(env: dict | None = None) -> Settings:
             warns.append(f"MAPPER_MIN_CHAIN_LPS override active: {a}/{b}/{c} (GEM1 default 65/50/40)")
         except ValueError:
             errs.append("MAPPER_MIN_CHAIN_LPS must be 'A,B,C' integers; GEM1 65,50,40 used")
+    mode = env.get("CHAIN_MODE", "intraday").strip().lower() or "intraday"
+    if mode not in {"intraday", "strict"}:
+        errs.append(f"CHAIN_MODE '{mode}' unknown; intraday used")
+        mode = "intraday"
+    s.chain_mode = mode
     s.map_max_age_h = _num(env, "MAP_MAX_AGE_H", 6.0, float, errs)
     s.no_entry_before_close_min = _num(env, "NO_ENTRY_BEFORE_CLOSE_MIN", 30.0, float, errs)
     data_dir = env.get("DATA_DIR") or env.get("RAILWAY_VOLUME_MOUNT_PATH")

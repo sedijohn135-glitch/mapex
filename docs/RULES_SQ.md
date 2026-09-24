@@ -12,8 +12,11 @@ pret që tregu t'i marrë ato dhe të kthehet me forcë, dhe hyn vetëm kur **t�
    - nga niveli më i fortë i paprekur vendos **drejtimin** (bias BUY ose SELL) dhe objektivin (DOL);
    - gjen zonat ku institucionet lanë gjurmë (OB, FVG, Breaker, IFVG, RB) **vetëm** nëse ato lindën nga marrja e një
      niveli likuiditeti — zinxhiri shkak-pasojë;
-   - zgjedh **CHAIN_A** (niveli burim duhet LPS ≥ 65) dhe **CHAIN_B** (LPS ≥ 50);
-   - kontrollon 11 rregulla verifikimi; nëse një dështon, harta **nuk publikohet** dhe nuk tregtohet.
+   - zgjedh **CHAIN_A** dhe **CHAIN_B**: në regjimin intraday (parazgjedhje) së pari zonat që çmimi i arrin
+     brenda sesionit (≤ 1 ATR sesioni), pastaj më të mirat e tjera; me `CHAIN_MODE=strict` pragjet e GEM1
+     (CHAIN_A LPS ≥ 65, CHAIN_B LPS ≥ 50);
+   - kontrollon 11 rregulla verifikimi; në regjimin intraday zonat e gabuara hiqen dhe pjesa tjetër shënohet si
+     paralajmërim (GEM1: "resolve before output"); me `strict` një dështim do të thotë **pa hartë**.
 2. **GEM 2 — Ekzekutuesi (M15 / M5 / M1)**, çdo minutë:
    - **P1 (25)** harta ekziston, teza është gjallë, M15 nuk e kundërshton;
    - **P2 (25)** jemi në kill zone (London 02:00–05:00, New York 08:30–11:00, PM Silver Bullet 14:00–15:00 NY),

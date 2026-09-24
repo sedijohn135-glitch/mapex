@@ -5,17 +5,19 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import re
+from collections import Counter
 from dataclasses import dataclass, field
 
 from mapex import guards
 from mapex.config import Settings
 from mapex.core.primitives import Bar, closed_bars
-from mapex.core.timeutil import TF_SECONDS, market_open, ny
+from mapex.core.timeutil import TF_SECONDS, killzone, market_open, ny
 from mapex.ctrader.broker import TradeManager
 from mapex.ctrader.client import Quote
 from mapex.ctrader.paper import PaperVenue
 from mapex.data.candles import HISTORY
-from mapex.pipeline import run_executor, run_mapper
+from mapex.pipeline import current_map, run_executor, run_mapper
 from mapex.store import Store
 
 REPLAY_SPREAD = {"XAUUSD": 0.20, "BTCUSD": 15.0}
@@ -32,6 +34,10 @@ class Report:
     valid_maps: int = 0
     trades: list[dict] = field(default_factory=list)
     decisions: dict[str, int] = field(default_factory=dict)
+    invalid: Counter = field(default_factory=Counter)  # why maps were refused
+    steps: Counter = field(default_factory=Counter)  # executor progress: RAID/SHIFT/GAP/RETURN/CONFIRMED
+    blocks: Counter = field(default_factory=Counter)  # why sequences stopped (RESET / NO-SETUP / INVALIDATED)
+    killzones: dict[str, bool] = field(default_factory=dict)  # "date name" -> a reachable chain was on the map
 
     @property
     def closed(self) -> list[dict]:
@@ -58,8 +64,16 @@ class Report:
         for t in self.trades[-10:]:
             r = "?" if t["result_r"] is None else f"{t['result_r']:+.2f}R"
             lines.append(f"• {ny(t['opened_at']):%m-%d %H:%M} {t['side'].upper()} @ {t['entry_fill']} → {r}")
+        if self.killzones:
+            lines.append(f"Kill zone me zinxhir afër çmimit: {sum(self.killzones.values())}/{len(self.killzones)}")
+        if self.invalid:
+            lines.append("Harta të refuzuara: " + " · ".join(f"{k} {n}" for k, n in self.invalid.most_common(3)))
+        lines.append("Hapat GEM2: " + " · ".join(f"{k} {self.steps.get(k, 0)}"
+                                                  for k in ("RAID", "SHIFT", "GAP", "RETURN", "CONFIRMED")))
+        if self.blocks:
+            lines.append("Pengesat kryesore: " + " · ".join(f"{k} ({n})" for k, n in self.blocks.most_common(3)))
         if not self.trades:
-            lines.append("Asnjë tregti 100/100 në këtë periudhë (normale: MAPEX është shumë selektiv).")
+            lines.append("Asnjë tregti 100/100 në këtë periudhë.")
         lines.append("Vetëm raport — asnjë urdhër real.")
         return "\n".join(lines)
 
@@ -102,12 +116,27 @@ async def run_replay(symbol: str, bars: dict[str, list[Bar]], start: int, end: i
             res = run_mapper(store, s, symbol, sl, bar.c, now)
             rep.maps += 1
             rep.valid_maps += int(res.valid)
+            if not res.valid:
+                rep.invalid[(res.reason or "?").split(":")[-1]] += 1
             next_map = h1_close + 3600 + 60
         sl = {tf: _upto(bars.get(tf, []), tf, now, 300 if tf != "M15" else 400) for tf in ("M1", "M5", "M15")}
         sl["D1"] = _upto(bars.get("D1", []), "D1", now, 60)
         res = run_executor(store, s, symbol, now, sl, q.bid, q.ask, market_open(symbol, now))
         for d in res.decisions:
             rep.decisions[d.output] = rep.decisions.get(d.output, 0) + 1
+            if d.output == "CONFIRMED":
+                rep.steps["CONFIRMED"] += 1
+            elif d.output == "WATCH" and d.state in ("RAID", "SHIFT", "GAP", "RETURN"):
+                rep.steps[d.state] += 1
+            elif d.output in ("RESET", "INVALIDATED") or (d.output == "NO-SETUP" and d.reason != "market_closed"):
+                rep.blocks[re.sub(r"[-\d.]+", "#", (d.reason or "?").split(";")[0])[:48]] += 1
+        kz = killzone(now) if market_open(symbol, now) else None
+        if kz:
+            m, _meta = current_map(store, symbol)
+            near = bool(m) and any(z["time_horizon"] == "INTRADAY" for z in m.get("key_zones", [])
+                                   if z["id"] in ("CHAIN_A", "CHAIN_B"))
+            day = f"{ny(now):%m-%d} {kz}"
+            rep.killzones[day] = rep.killzones.get(day, False) or near
         if res.rerun_mapper:
             next_map = 0
         if res.plan:

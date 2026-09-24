@@ -33,7 +33,7 @@ Nëse vjen 🔑, merr token të ri nga Playground dhe vendose te Railway.
 Rrugë e vjetër (rezervë): `CTRADER_MCP_CONFIG` nga cTrader Web → Remote MCP — përdoret vetëm kur mungojnë variablat e
 Open API.
 
-Opsionale: `MAX_TRADES_PER_DAY` (3), `MAX_CONSECUTIVE_LOSSES` (3), `DAILY_LOSS_LIMIT_R` (3.0), `MAX_LOT` (1.0),
+Opsionale: `CHAIN_MODE` (`intraday` = zinxhirë afër çmimit në çdo kill zone; `strict` = GEM1 fjalë për fjalë), `MAX_TRADES_PER_DAY` (3), `MAX_CONSECUTIVE_LOSSES` (3), `DAILY_LOSS_LIMIT_R` (3.0), `MAX_LOT` (1.0),
 `TP1_CLOSE_PCT` (50, lejohet 50–80), `MAX_SPREAD`, `NOTIFY_EXITS` (`true` nëse do mesazh edhe kur mbyllet tregtia).
 
 Simbol pa `LOT_…` nuk tregtohet kurrë. Lot më i madh se `MAX_LOT` refuzohet në nisje.
