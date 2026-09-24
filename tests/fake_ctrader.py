@@ -39,6 +39,7 @@ class FakeCTrader:
         self.newest = 0  # evicting_connector: the only session the server still knows
         self.evicted = 0  # requests rejected because a newer session replaced theirs
         self.ts_format: str | None = None  # None: numeric timestamps; "iso" | "ms": string timestamps (live server)
+        self.count_cap: int | None = None  # get_trendbars `count` above this is refused like a >720 h range
 
     # ------------------------------------------------------------ helpers
     def sym(self, sid: int) -> str:
@@ -140,27 +141,40 @@ def build_server(fake: FakeCTrader) -> MCPServer:
 
     if fake.ts_format:
         @srv.tool(name="get_trendbars")
-        def get_trendbars_text(symbolId: int, period: str, fromTimestamp: str, toTimestamp: str) -> dict:
+        def get_trendbars_text(symbolId: int, period: str, fromTimestamp: str | None = None,
+                               toTimestamp: str | None = None, count: int | None = None) -> dict:
             fake.log("get_trendbars", {"symbolId": symbolId, "period": period, "fromTimestamp": fromTimestamp,
-                                       "toTimestamp": toTimestamp})
-            return trendbars(symbolId, period, fake.parse_ts(fromTimestamp), fake.parse_ts(toTimestamp))
+                                       "toTimestamp": toTimestamp, "count": count})
+            return trendbars(symbolId, period, fromTimestamp and fake.parse_ts(fromTimestamp),
+                             toTimestamp and fake.parse_ts(toTimestamp), count)
     else:
         @srv.tool()
-        def get_trendbars(symbolId: int, period: str, fromTimestamp: int, toTimestamp: int) -> dict:
+        def get_trendbars(symbolId: int, period: str, fromTimestamp: int | None = None,
+                          toTimestamp: int | None = None, count: int | None = None) -> dict:
             fake.log("get_trendbars", {"symbolId": symbolId, "period": period, "fromTimestamp": fromTimestamp,
-                                       "toTimestamp": toTimestamp})
-            return trendbars(symbolId, period, fromTimestamp, toTimestamp)
+                                       "toTimestamp": toTimestamp, "count": count})
+            return trendbars(symbolId, period, fromTimestamp, toTimestamp, count)
 
-    def trendbars(symbolId: int, period: str, fromTimestamp: int, toTimestamp: int) -> dict:
+    def trendbars(symbolId: int, period: str, fromTimestamp, toTimestamp, count) -> dict:
         if period not in PERIODS:
             raise ToolError("Input validation error: period")
-        if toTimestamp - fromTimestamp > 720 * 3600 * 1000:
+        if count is not None and fromTimestamp is not None:
+            raise ToolError("Do NOT use fromTimestamp+count")
+        if count is None and (fromTimestamp is None or toTimestamp is None):
+            raise ToolError("fromTimestamp and toTimestamp are required")
+        if count is not None and fake.count_cap is not None and count > fake.count_cap:
+            raise ToolError("Time range exceeds upstream cap of 720h (PT720H = 30 days).")
+        if count is None and toTimestamp - fromTimestamp > 720 * 3600 * 1000:
             raise ToolError("Time range exceeds upstream cap of 720h (PT720H = 30 days).")
         name = fake.sym(symbolId)
         enc = fake.bar_encoding
         tf = {"M_1": "M1", "M_5": "M5", "M_15": "M15", "M_30": "M30", "H_1": "H1", "H_4": "H4", "D_1": "D1",
               "W_1": "W1", "MN_1": "MN1"}[period]
-        rows = [b for b in fake.bars.get((name, tf), []) if fromTimestamp <= b[0] * 1000 < toTimestamp]
+        stored = fake.bars.get((name, tf), [])
+        if count is not None:
+            rows = stored[-count:][::-1]  # newest first: the client must not rely on the order
+        else:
+            rows = [b for b in stored if fromTimestamp <= b[0] * 1000 < toTimestamp]
         page, more = rows[:1000], len(rows) > 1000
         return {"trendbars": [{"timestamp": b[0] * 1000, "open": fake.raw(name, b[1], enc),
                                "high": fake.raw(name, b[2], enc), "low": fake.raw(name, b[3], enc),
