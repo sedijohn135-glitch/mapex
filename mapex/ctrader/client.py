@@ -36,7 +36,7 @@ HISTORICAL_TOOLS = {"get_trendbars", "get_order_history", "get_deals"}
 MUTATIONS = {"create_order", "amend_order", "cancel_order", "amend_position", "close_position"}
 MAX_WINDOW_S = 720 * 3600  # Q-R7
 READ_RETRIES = 2
-SESSION_RETRIES = 5  # "Session not found; re-initialize": the session is reopened and the request resent (D-65)
+SESSION_RETRIES = 8  # "Session not found; re-initialize": the session is reopened and the request resent (D-65)
 BACKOFF_S = 0.3
 
 
@@ -173,6 +173,7 @@ class CTraderClient:
         self.last_error: str | None = None
         self.skew_s = 0.0
         self.sessions_opened = 0
+        self.stats = {"requests": 0, "sessions": 0, "lost": 0}  # since the last heartbeat log (D-68)
         self._queue: asyncio.Queue | None = None
         self._owner: asyncio.Task | None = None
 
@@ -225,10 +226,12 @@ class CTraderClient:
                                 stack = AsyncExitStack()
                                 session = await stack.enter_async_context(self.connector(self.url, self.token))
                                 self.sessions_opened += 1
+                                self.stats["sessions"] += 1
                                 if not self.tools:
                                     self._load_tools(await session.list_tools())
                             if tool not in self.tools:
                                 raise ToolError(f"tool {tool} not offered by this connection (data-only token?)")
+                            self.stats["requests"] += 1
                             res = await session.call_tool(tool, self._fit_args(tool, self._filter_args(tool, args)))
                         if not fut.done():
                             fut.set_result(res)
@@ -239,6 +242,7 @@ class CTraderClient:
                             if stack is not None:
                                 await _drop(stack)
                             stack = session = None
+                        self.stats["lost"] += lost
                         if lost and attempt < SESSION_RETRIES:
                             await asyncio.sleep(BACKOFF_S * (attempt + 1))
                             continue
@@ -430,15 +434,30 @@ class CTraderClient:
             while True:
                 data = await self.call("get_trendbars", {"symbolId": sid, "period": PERIODS[tf],
                                                          "fromTimestamp": cursor * 1000, "toTimestamp": end * 1000})
-                rows = data.get("trendbars") or data.get("trendBars") or data.get("bars") or []
-                parsed = [b for b in (parse_trendbar(r, 0) for r in rows) if b is not None]
+                parsed = _raw_bars(data)
                 for b in parsed:
                     bars[b.t] = b
                 if not data.get("hasMore") or not parsed or max(b.t for b in parsed) + 1 >= end:
                     break
                 cursor = max(b.t for b in parsed) + 1
             start = end
-        raw = [bars[t] for t in sorted(bars) if frm <= t < to]
+        return self._scaled(name, [bars[t] for t in sorted(bars) if frm <= t < to])
+
+    async def last_bars(self, name: str, tf: str, count: int) -> list[Bar] | None:
+        """The newest `count` bars in one request: start-up history in 1 call instead of dozens of 720 h chunks
+        (D-68). None when the live schema has no `count` or the server refuses it; the caller loads by ranges."""
+        await self.load_symbols()
+        if "count" not in self.tools.get("get_trendbars", set()):
+            return None
+        try:
+            data = await self.call("get_trendbars", {"symbolId": self.symbol_id(name), "period": PERIODS[tf],
+                                                     "count": count})
+        except ToolError as exc:
+            log.info("%s %s: count=%d refused (%s); loading by ranges", name, tf, count, str(exc)[:120])
+            return None
+        return self._scaled(name, sorted(_raw_bars(data), key=lambda b: b.t))
+
+    def _scaled(self, name: str, raw: list[Bar]) -> list[Bar]:
         if not raw:
             return raw
         if name not in self.bar_digits:  # trendbars may be encoded differently from spot: prove it on a close
@@ -446,6 +465,11 @@ class CTraderClient:
                                                      self.bands.get(name, [0, 1e12]))
         k = 10 ** self.bar_digits[name]
         return [Bar(b.t, b.o / k, b.h / k, b.l / k, b.c / k) for b in raw]
+
+
+def _raw_bars(data: dict) -> list[Bar]:
+    rows = data.get("trendbars") or data.get("trendBars") or data.get("bars") or []
+    return [b for b in (parse_trendbar(r, 0) for r in rows) if b is not None]
 
 
 def parse_trendbar(row: dict[str, Any], digits: int) -> Bar | None:

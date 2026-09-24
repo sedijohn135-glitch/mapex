@@ -41,7 +41,13 @@ class Candles:
         if tf == "MN1":
             span = 31 * 86400 * HISTORY[tf]
         start = have[-2].t if len(have) >= 2 else int(now - span * 1.5 - 7 * 86400)
-        fresh = await self.client.trendbars(symbol, tf, start, int(now) + TF_SECONDS[tf])
+        fresh = None
+        if len(have) < 2:  # start-up: one `count` request instead of dozens of 720 h chunks (D-68)
+            fresh = await self.client.last_bars(symbol, tf, int(HISTORY[tf] * 1.2))
+            if fresh is not None and len(fresh) < HISTORY[tf]:
+                fresh = None  # short answer (server cap): load by ranges
+        if fresh is None:
+            fresh = await self.client.trendbars(symbol, tf, start, int(now) + TF_SECONDS[tf])
         merged = {b.t: b for b in have}
         merged.update({b.t: b for b in fresh})
         bars = [merged[t] for t in sorted(merged)][-int(HISTORY[tf] * 1.2):]

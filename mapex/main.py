@@ -323,6 +323,8 @@ class App:
             return
         try:
             await self.client.call("get_version")
+            log.info("cTrader: %s", self.client.stats)  # requests / sessions opened / lost-session retries
+            self.client.stats = dict.fromkeys(self.client.stats, 0)
             if not self.active:
                 await self.connect()
             elif self.disabled:  # retry symbols a transient error disabled at start-up

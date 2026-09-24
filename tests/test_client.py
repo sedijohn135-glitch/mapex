@@ -329,3 +329,42 @@ def test_order_session_error_inside_a_tool_result_is_never_resent():
 
     run(go())
     assert [t for t, _ in fake.calls].count("create_order") == 1
+
+
+def test_startup_history_is_one_count_request_per_timeframe():
+    """Railway: the ranged start-up load (~80 chunks per symbol) took 10-25 minutes (D-68)."""
+    fake = FakeCTrader()
+    day = 86400
+    start = 1_760_000_000 // day * day
+    fake.bars[("XAUUSD", "D1")] = [(start + i * day, 2600 + i, 2601 + i, 2599 + i, 2600.5 + i) for i in range(400)]
+    now = start + 400 * day
+
+    async def go():
+        c = client_for(fake)
+        await c.calibrate("XAUUSD", [3], [1500, 14000])
+        return await Candles(c).refresh("XAUUSD", "D1", now)
+
+    bars = run(go())
+    calls = [a for t, a in fake.calls if t == "get_trendbars"]
+    assert calls == [{"symbolId": 41, "period": "D_1", "count": 300}]
+    assert len(bars) == 300 and bars[-1].t == start + 399 * day and bars[0].t < bars[-1].t
+
+
+def test_count_refused_or_short_falls_back_to_ranges():
+    day = 86400
+    start = 1_760_000_000 // day * day
+    for cap, stored in ((100, 400), (None, 120)):  # refused (720 h cap) / short answer
+        fake = FakeCTrader()
+        fake.count_cap = cap
+        fake.bars[("XAUUSD", "D1")] = [(start + i * day, 2600, 2601, 2599, 2600.5) for i in range(400)][-stored:]
+        now = start + 400 * day
+
+        async def go(fake=fake, now=now):
+            c = client_for(fake)
+            await c.calibrate("XAUUSD", [3], [1500, 14000])
+            return await Candles(c).refresh("XAUUSD", "D1", now)
+
+        bars = run(go())
+        calls = [a for t, a in fake.calls if t == "get_trendbars"]
+        assert calls[0].get("count") == 300 and all("fromTimestamp" in a for a in calls[1:]) and len(calls) > 2
+        assert len(bars) == min(stored, 300)

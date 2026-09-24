@@ -170,3 +170,14 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
   go out one at a time through a queue (anyio scopes still never cross tasks, D-64). A lost session is reopened and
   the request resent (D-65). A timeout closes the session and is never resent. Any other service using the same
   cTrader token can still take MAPEX's session; MAPEX then reopens it.
+- **D-68** Fourth round of Railway logs (single reused session live): XAUUSD mapped (`valid=True`) and BTCUSD mapped
+  (`bias_conflict_htf`), but the start-up history load took ~10 minutes for XAUUSD and ~25 for BTCUSD. It needed
+  ~80 ranged `get_trendbars` chunks per symbol (720 h cap), and a run of lost sessions failed two ticks along the
+  way.
+  - **Start-up history in one request per timeframe.** The live schema offers `count` ("Defaults to now when only
+    'count' is provided"; never together with `fromTimestamp`), so each timeframe asks for the newest
+    `HISTORY × 1.2` bars in one request. It falls back to 720 h ranges when the schema has no `count`, the server
+    refuses it, or the answer is short. Incremental refreshes still use `from`/`to`.
+  - **More lost-session retries.** Up to 8 (safe per D-65).
+  - **Heartbeat stats.** Every 5 minutes the heartbeat logs `cTrader: {requests, sessions, lost}`, so the logs
+    show how often the server drops the session.
