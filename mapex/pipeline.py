@@ -17,6 +17,12 @@ def run_mapper(store: Store, s: Settings, symbol: str, bars: dict, price: float,
     """GEM1 run; a map is *published* only when Step 8 passes (invalid maps are kept for audit only)."""
     res = build_map(MapperInput(symbol, now, price, bars, s.tick(symbol), s.display_decimals.get(symbol, 2),
                                 s.chain_gates, s.chain_mode))
+    save_map(store, symbol, now, res)
+    return res
+
+
+def save_map(store: Store, symbol: str, now: float, res: MapResult) -> None:
+    """Every map is kept for audit; a valid one becomes the symbol's current map (MAPEX's own or Gemini's)."""
     with store.tx():
         cur = store.execute(
             "INSERT INTO maps(symbol, created_at, json, bias, valid, hash, struct_hash, reason) "
@@ -34,7 +40,6 @@ def run_mapper(store: Store, s: Settings, symbol: str, bars: dict, price: float,
         store.execute("DELETE FROM maps WHERE symbol=? AND id < (SELECT MAX(id) FROM maps WHERE symbol=?) - ? "
                       "AND id != COALESCE((SELECT MAX(id) FROM maps WHERE symbol=? AND valid=1), -1)",
                       (symbol, symbol, MAPS_KEPT, symbol))
-    return res
 
 
 def current_map(store: Store, symbol: str) -> tuple[dict | None, dict]:

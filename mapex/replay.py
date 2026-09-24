@@ -36,7 +36,8 @@ class Report:
     decisions: dict[str, int] = field(default_factory=dict)
     invalid: Counter = field(default_factory=Counter)  # why maps were refused
     steps: Counter = field(default_factory=Counter)  # executor progress: RAID/SHIFT/GAP/RETURN/CONFIRMED
-    blocks: Counter = field(default_factory=Counter)  # why sequences stopped (RESET / NO-SETUP / INVALIDATED)
+    blocks: Counter = field(default_factory=Counter)  # why GEM2 sequences stopped (RESET / NO-SETUP / INVALIDATED)
+    idle: Counter = field(default_factory=Counter)  # minutes the executor could not start (no map, stale, ...)
     killzones: dict[str, bool] = field(default_factory=dict)  # "date name" -> a reachable chain was on the map
 
     @property
@@ -71,7 +72,9 @@ class Report:
         lines.append("Hapat GEM2: " + " · ".join(f"{k} {self.steps.get(k, 0)}"
                                                   for k in ("RAID", "SHIFT", "GAP", "RETURN", "CONFIRMED")))
         if self.blocks:
-            lines.append("Pengesat kryesore: " + " · ".join(f"{k} ({n})" for k, n in self.blocks.most_common(3)))
+            lines.append("Ku ndalet GEM2: " + " · ".join(f"{k} ({n})" for k, n in self.blocks.most_common(4)))
+        if self.idle:
+            lines.append("Pa punë (minuta): " + " · ".join(f"{k} {n}" for k, n in self.idle.most_common(3)))
         if not self.trades:
             lines.append("Asnjë tregti 100/100 në këtë periudhë.")
         lines.append("Vetëm raport — asnjë urdhër real.")
@@ -128,7 +131,10 @@ async def run_replay(symbol: str, bars: dict[str, list[Bar]], start: int, end: i
                 rep.steps["CONFIRMED"] += 1
             elif d.output == "WATCH" and d.state in ("RAID", "SHIFT", "GAP", "RETURN"):
                 rep.steps[d.state] += 1
-            elif d.output in ("RESET", "INVALIDATED") or (d.output == "NO-SETUP" and d.reason != "market_closed"):
+            elif d.output == "NO-SETUP" and d.zone_key is None:
+                if d.reason != "market_closed":
+                    rep.idle[d.reason] += 1
+            elif d.output in ("RESET", "INVALIDATED", "NO-SETUP", "MONITOR"):
                 rep.blocks[re.sub(r"[-\d.]+", "#", (d.reason or "?").split(";")[0])[:48]] += 1
         kz = killzone(now) if market_open(symbol, now) else None
         if kz:
@@ -158,7 +164,7 @@ async def fetch_history(client, symbol: str, days: int, end: int) -> dict[str, l
     """Every timeframe from the broker (never aggregated), chunked by the client into <= 720 h windows."""
     out = {}
     for tf, warm in WARMUP_DAYS.items():
-        span = (days if tf in ("M1", "M5") else 0) + warm
+        span = days + warm  # every timeframe covers the whole period plus its warm-up (was M1/M5 only)
         out[tf] = await client.trendbars(symbol, tf, int(end - span * 86400), int(end))
         await asyncio.sleep(0)
     return out

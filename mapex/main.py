@@ -11,7 +11,7 @@ import uuid
 
 from mapex import config, guards
 from mapex.config import Settings
-from mapex.core.timeutil import fmt_ny, market_open, trading_day
+from mapex.core.timeutil import fmt_ny, killzone, market_open, trading_day
 from mapex.ctrader.broker import LiveVenue, TradeManager
 from mapex.ctrader.client import AuthError, CTraderClient, CTraderError, http_connector
 from mapex.ctrader.decode import DEFAULT_URL, DecodeError, mask, parse_mcp_config, token_environment
@@ -23,7 +23,7 @@ from mapex.executor.state import load_states
 from mapex.mapper.engine import brief
 from mapex.pipeline import current_map, run_executor, run_mapper
 from mapex.store import Store
-from mapex.telegram import TelegramBot, e, msg_startup, msg_token_expired
+from mapex.telegram import TelegramBot, e, msg_gemini_map, msg_startup, msg_token_expired
 
 log = logging.getLogger("mapex")
 AUTH_TRIP_S = 15 * 60
@@ -282,12 +282,14 @@ class App:
     async def map_symbol(self, sym: str, now: float) -> None:
         for tf in ("MN1", "W1", "D1", "H4", "H1", "M15"):
             await self.candles.refresh(sym, tf, now)
+        self.map_due[sym] = (int(now) // 3600 + 1) * 3600 + 60  # next H1 close + 60 s
+        if self.s.map_source == "gemini":  # D-71: Gemini sends the map through /mcp; candles stay warm
+            return
         bars = {tf: self.candles.closed(sym, tf, now) for tf in ("MN1", "W1", "D1", "H4", "H1", "M15")}
         q = self.quotes.last.get(sym)
         price = q.bid if q else (bars["M15"][-1].c if bars["M15"] else 0.0)
         res = run_mapper(self.store, self.s, sym, bars, price, now)
         log.info("%s map: valid=%s reason=%s", sym, res.valid, res.reason)
-        self.map_due[sym] = (int(now) // 3600 + 1) * 3600 + 60  # next H1 close + 60 s
 
     async def minute_tick(self) -> None:
         if not self.leader:
@@ -324,10 +326,23 @@ class App:
                            market_open(sym, now), ok)
         if res.rerun_mapper:
             self.map_due[sym] = 0
+        if self.s.map_source == "gemini":
+            self.gemini_alert(sym, now, res)
         if res.plan:
             fresh = self.quotes.fresh(sym, self.clock())
             out = await self.tm.execute(res.plan, fresh)
             log.info("%s %s -> %s", sym, res.plan.setup_key, out)
+
+    def gemini_alert(self, sym: str, now: float, res) -> None:
+        """One critical alert per Gemini map when it can no longer trade: thesis broken, or too old in a kill zone."""
+        _, meta = current_map(self.store, sym)
+        mid = meta.get("map_id")
+        broken = next((d.chain for d in res.decisions if d.output == "INVALIDATED"), None)
+        if broken:
+            self.store.outbox_add(f"gemini-invalid:{sym}:{mid}:{broken}", msg_gemini_map(sym, broken),
+                                  critical=True)
+        elif killzone(now) and any(d.reason == "strategic_map_stale" for d in res.decisions):
+            self.store.outbox_add(f"gemini-stale:{sym}:{mid}", msg_gemini_map(sym), critical=True)
 
     async def manage_tick(self) -> None:
         if self.leader and guards.open_trades(self.store):
@@ -463,7 +478,8 @@ class App:
                 lines.append(f"{sym}: çaktivizuar ({e(self.disabled[sym][:80])})")
                 continue
             if not m:
-                lines.append(f"{sym}: pa hartë të vlefshme")
+                lines.append(f"{sym}: pa hartë të vlefshme"
+                             f"{' — pret JSON-in e Gemini te /mcp' if self.s.map_source == 'gemini' else ''}")
                 continue
             states = load_states(self.store, sym)
             zs = []
@@ -471,7 +487,8 @@ class App:
                 st = states.get(meta["zone_keys"].get(kz["id"], ""))
                 zs.append(f"{kz['id']} {st.state if st else 'WATCH'}"
                           f"{f' (sweep {st.sweep_count})' if st and st.sweep_count else ''}")
-            lines.append(f"{sym}: harta {fmt_ny(meta['created_at'])} NY · bias {m['strategic_bias'].upper()} · "
+            src = "Gemini" if m.get("source") == "gemini" else "MAPEX"
+            lines.append(f"{sym}: harta {src} {fmt_ny(meta['created_at'])} NY · bias {m['strategic_bias'].upper()} · "
                          + " · ".join(zs))
         opened = guards.open_trades(self.store)
         pos = ", ".join(f"{t['symbol']} {t['side'].upper()} {t['lots']:.2f} @{t['entry_fill']}, SL {t['sl']}, "
@@ -508,7 +525,7 @@ class App:
                         "trading_profile": self.client.trading_profile, "active_symbols": self.active,
                         "disabled": self.disabled},
             "quote_age_s": {s: self.quotes.age(s, now) for s in self.active},
-            "maps": maps, "zone_states": zones,
+            "maps": maps, "zone_states": zones, "map_source": self.s.map_source, "mcp": bool(self.s.mcp_token),
             "open_trades": [dict(symbol=t["symbol"], side=t["side"], state=t["state"], lots=t["lots"])
                             for t in guards.open_trades(self.store)],
             "guards": {"kill_switch": guards.kill_switch(self.store), **guards.day_stats(self.store, now)},
@@ -519,17 +536,9 @@ class App:
 
     # ------------------------------------------------------------- run
     def asgi(self):
-        from starlette.applications import Starlette
-        from starlette.responses import JSONResponse
-        from starlette.routing import Route
+        from mapex.mcp_api import build
 
-        async def health(_request):
-            try:
-                return JSONResponse(self.health())
-            except Exception as exc:  # noqa: BLE001 — /health must answer while the process lives
-                return JSONResponse({"status": "degraded", "error": type(exc).__name__})
-
-        return Starlette(routes=[Route("/health", health), Route("/", health)])
+        return build(self)
 
     async def every(self, fn, interval: float) -> None:
         while True:
@@ -593,7 +602,7 @@ class App:
 def main() -> None:
     s = config.load()
     setup_logging(s.log_level, [s.ctrader_token, s.telegram_token, s.ctrader_config, s.ctrader_client_secret,
-                                s.ctrader_access_token, s.ctrader_refresh_token])
+                                s.ctrader_access_token, s.ctrader_refresh_token, s.mcp_token])
     for w in s.warnings + s.errors:
         log.warning(w)
     app = App(s)

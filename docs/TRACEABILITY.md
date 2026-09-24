@@ -6,6 +6,10 @@ Deviations and interpretations: `docs/DECISIONS.md`.
 
 ## GEM 1 — HTF Structure Mapper
 
+> D-71: with `MAP_SOURCE=gemini` (the default) Gemini runs GEM1 from `docs/gemini/GEM1_SPARK_SKILL.md` and
+> `mapex/gemini_map.py::accept` checks its JSON (`tests/test_gemini.py`). The rows below are the built-in mapper,
+> used with `MAP_SOURCE=mapex`.
+
 | GEM section | Rule | Code | Test |
 |---|---|---|---|
 | GEM1 · LAYER 2 | FVG strict, CE anchor | `mapex/core/primitives.py::fvgs` | `tests/test_primitives.py::test_fvg_strict_and_displacement` |

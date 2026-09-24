@@ -26,6 +26,7 @@ Nuk ke nevojë të dish kod. Çdo hap bëhet nga telefoni, në faqen railway.com
 | `LOT_BTCUSD` | p.sh. `0.01` |
 | `TRADING_MODE` | `paper` në fillim; `live` kur je gati |
 | `CONFIRM_LIVE_ACCOUNT` | `YES` vetëm kur do të tregtosh me llogari reale |
+| `MCP_TOKEN` | fjalëkalim i gjatë i rastësishëm (min. 24 shkronja/numra) — çelësi me të cilin Gemini hyn te `/mcp` |
 
 **cTrader lidhet me Open API** (5 variablat më lart). MAPEX e gjen vetë nëse llogaria është demo apo live dhe lidhet
 te serveri i duhur. Kur tokeni skadon (~30 ditë), MAPEX e rinovon vetë me refresh token-in dhe e ruan në Volume.
@@ -33,7 +34,8 @@ Nëse vjen 🔑, merr token të ri nga Playground dhe vendose te Railway.
 Rrugë e vjetër (rezervë): `CTRADER_MCP_CONFIG` nga cTrader Web → Remote MCP — përdoret vetëm kur mungojnë variablat e
 Open API.
 
-Opsionale: `CHAIN_MODE` (`intraday` = zinxhirë afër çmimit në çdo kill zone; `strict` = GEM1 fjalë për fjalë), `MAX_TRADES_PER_DAY` (3), `MAX_CONSECUTIVE_LOSSES` (3), `DAILY_LOSS_LIMIT_R` (3.0), `MAX_LOT` (1.0),
+Opsionale: `MAP_SOURCE` (`gemini` = harta vjen nga Gemini, parazgjedhje; `mapex` = MAPEX harton vetë),
+`CHAIN_MODE` (vlen vetëm me `MAP_SOURCE=mapex`: (`intraday` = zinxhirë afër çmimit në çdo kill zone; `strict` = GEM1 fjalë për fjalë)), `MAP_MAX_AGE_H` (6 — pas sa orësh skadon harta), `MAX_TRADES_PER_DAY` (3), `MAX_CONSECUTIVE_LOSSES` (3), `DAILY_LOSS_LIMIT_R` (3.0), `MAX_LOT` (1.0),
 `TP1_CLOSE_PCT` (50, lejohet 50–80), `MAX_SPREAD`, `NOTIFY_EXITS` (`true` nëse do mesazh edhe kur mbyllet tregtia).
 
 Simbol pa `LOT_…` nuk tregtohet kurrë. Lot më i madh se `MAX_LOT` refuzohet në nisje.
@@ -57,7 +59,10 @@ llogari, kopjoje sërish.
 Në çdo hap: `/replay XAUUSD 30` të tregon sa tregti do të kishte hapur sistemi në 30 ditët e fundit dhe rezultatin në R.
 
 ## 5) Përdorimi i përditshëm
-- Nuk ke asgjë për të bërë. MAPEX harton (GEM1) pas çdo mbylljeje H1 dhe ekzekuton (GEM2) çdo minutë.
+- **Gemini harton (GEM1), MAPEX ekzekuton (GEM2).** Gemini merr çmimet live nga MAPEX dhe i dërgon hartën JSON
+  te `/mcp`; MAPEX e kontrollon, e ndjek çdo minutë dhe hyn vetëm kur GEM2 del 100/100.
+- Harta skadon pas 6 orësh: Gemini duhet të hartojë para çdo kill zone (orari: pjesa 6). Nëse fillon kill zone me
+  hartë të skaduar, të vjen ⏰ në Telegram.
 - Kur hyn në treg, të vjen mesazhi me çmimin, lotin, SL dhe TP.
 - `/stop` ndal hyrjet e reja në çdo moment · `/flat` pastaj `/flat yes` mbyll gjithçka të MAPEX · `/resume` rifillon.
 - Nëse vjen 🛑 ose 🔑, MAPEX ka ndaluar vetë: rregullo arsyen dhe shtyp `/resume`.
@@ -75,12 +80,37 @@ Në çdo hap: `/replay XAUUSD 30` të tregon sa tregti do të kishte hapur siste
 /health   – si /status, i shkurtër
 ```
 
-## 6) Probleme të shpeshta
+## 6) Gemini + `/mcp` (Gemini harton, MAPEX ekzekuton)
+1. Railway → shërbimi MAPEX → **Settings** → **Networking** → **Public Networking** → **Generate Domain**. Nëse të
+   pyet për portin, lëre atë që sugjeron Railway (MAPEX dëgjon te `PORT`). Kopjo domenin, p.sh.
+   `mapex-production.up.railway.app`.
+2. **Variables** → **New Variable** → `MCP_TOKEN` = fjalëkalim i gjatë i rastësishëm (krijoje me menaxherin e
+   fjalëkalimeve, min. 24 shenja). Railway rindez MAPEX vetë.
+3. Provë: hap në shfletues `https://<domeni>/health` → duhet të shohësh `"status": "ok"` dhe `"mcp": true`.
+4. Në Gemini: shto një konektor / server MCP me adresën
+   `https://<domeni>/mcp?key=<MCP_TOKEN>`
+   (nëse Gemini ka fushë të veçantë për çelësin: adresa `https://<domeni>/mcp` dhe header
+   `Authorization: Bearer <MCP_TOKEN>`).
+5. Te udhëzimet e skill-it në Gemini ngjit: së pari `docs/gemini/GEM1_SPARK_SKILL.md`, pastaj të plotë
+   `docs/source/GEM1.md`.
+6. Shkruaji Gemini-t: **MAP XAUUSD**. Gemini thërret `market_snapshot`, `market_candles`, pastaj `submit_gem1_map`.
+   Në Telegram `/status` duhet të tregojë `XAUUSD: harta Gemini HH:MM NY · bias …`.
+7. Orari (nëse Gemini lejon veprime të planifikuara), çdo ditë pune: **07:30**, **14:00**, **19:30** ora e Tiranës
+   (para London, New York dhe PM Silver Bullet).
+
+⚠️ Adresa me `?key=` është çelës: mos e ndaj me askënd. Nëse të rrjedh, ndrysho `MCP_TOKEN` te Railway dhe te
+Gemini. Gemini nuk mund të hapë, ndryshojë apo mbyllë tregti: ai vetëm dërgon hartën.
+
+## 7) Probleme të shpeshta
 | Shenja | Zgjidhja |
 |---|---|
 | "healthcheck failed" | Healthcheck Path duhet `/health`; shiko Deploy Logs |
 | 🔑 autorizimi dështoi | kontrollo 5 variablat CTRADER_… te Railway; token i ri nga openapi.ctrader.com → Playground |
 | S'hap asnjë tregti | normale: kërkohet 100/100 + kill zone; shiko `/status` dhe `/replay` |
+| `/status`: "pret JSON-in e Gemini" | Gemini s'ka dërguar hartë: shkruaj MAP XAUUSD te Gemini (pjesa 6) |
+| ⏰ harta e Gemini skadoi / teza u prish | kërkoji Gemini-t hartë të re (MAP XAUUSD) |
+| Gemini: 401 / unauthorized | çelësi në adresë nuk është i njëjtë me `MCP_TOKEN` te Railway |
+| Gemini: 503 | mungon `MCP_TOKEN` te Railway |
 | Mesazhe "PAPER" edhe pse vendose live | mungon `CONFIRM_LIVE_ACCOUNT=YES` ose tokeni është i llogarisë demo |
 | Urdhri dështoi | lexo mesazhin 🛑, kontrollo lotin, spread-in dhe orarin e tregut |
 | ⚠️ Pa Volume | Railway → + Create → Volume → Mount path `/data` |

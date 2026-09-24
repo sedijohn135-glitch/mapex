@@ -83,6 +83,14 @@ def msg_token_expired(detail: str | None = None, openapi: bool = False) -> str:
     return text
 
 
+def msg_gemini_map(symbol: str, invalidated: str | None = None) -> str:
+    if invalidated:
+        return (f"⏰ <b>{e(symbol)}: teza e {e(invalidated)} u prish</b> (mbyllje D1 përtej rrënjës) — MAPEX nuk hyn "
+                "më në këtë zonë. Kërkoji Gemini-t hartë të re.")
+    return (f"⏰ <b>{e(symbol)}: harta e Gemini skadoi</b> në kill zone — MAPEX nuk hyn derisa Gemini të dërgojë "
+            "hartë të re.")
+
+
 def msg_auto_stop(reason: str) -> str:
     return (f"🛑 <b>MAPEX U NDAL AUTOMATIKISHT</b>\nArsyeja: {e(reason)}\n"
             "Pozicionet ekzistuese mbeten me SL/TP. Rifillo me /resume.")

@@ -59,6 +59,8 @@ class Settings:
     notify_exits: bool = False
     chain_gates: tuple[int, int, int] = CHAIN_GATES
     chain_mode: str = "intraday"  # D-70: the owner's choice; CHAIN_MODE=strict = GEM1 to the letter
+    map_source: str = "gemini"  # D-71: Gemini maps (GEM1), MAPEX executes; MAP_SOURCE=mapex = the built-in mapper
+    mcp_token: str = ""
     map_max_age_h: float = 6.0
     no_entry_before_close_min: float = 30.0
     data_dir: Path = Path("./data")
@@ -179,6 +181,16 @@ def load(env: dict | None = None) -> Settings:
         errs.append(f"CHAIN_MODE '{mode}' unknown; intraday used")
         mode = "intraday"
     s.chain_mode = mode
+    source = env.get("MAP_SOURCE", "gemini").strip().lower() or "gemini"
+    if source not in {"gemini", "mapex"}:
+        errs.append(f"MAP_SOURCE '{source}' unknown; gemini used")
+        source = "gemini"
+    s.map_source = source
+    s.mcp_token = env.get("MCP_TOKEN", "").strip()
+    if source == "gemini" and not s.mcp_token:
+        warns.append("MCP_TOKEN missing: Gemini cannot reach /mcp, so no maps and no trades")
+    elif s.mcp_token and len(s.mcp_token) < 24:
+        warns.append("MCP_TOKEN is short: use at least 24 random characters")
     s.map_max_age_h = _num(env, "MAP_MAX_AGE_H", 6.0, float, errs)
     s.no_entry_before_close_min = _num(env, "NO_ENTRY_BEFORE_CLOSE_MIN", 30.0, float, errs)
     data_dir = env.get("DATA_DIR") or env.get("RAILWAY_VOLUME_MOUNT_PATH")

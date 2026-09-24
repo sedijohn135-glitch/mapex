@@ -237,3 +237,30 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
     reasons, the GEM2 steps reached (RAID/SHIFT/GAP/RETURN/CONFIRMED) and the top reasons sequences stopped.
   - **Synthetic markets.** Strict published 32–39/55 maps with a reachable chain in 0–2/55. Intraday published
     55/55 with a reachable chain in 37–50/55.
+- **D-71** Gemini maps (GEM1), MAPEX executes (GEM2). This is the owner's decision and the default (`MAP_SOURCE=gemini`).
+  `MAP_SOURCE=mapex` keeps the built-in mapper.
+  - **Why.** The owner's proven manual flow was Gemini GEM1 → alarms → GEM2 at the zone (about 80% of setups
+    worked). The coded mapper could not match Gemini's reading of structure. Code stays where it is exact: data,
+    GEM2 scoring, orders and guards.
+  - **Data.** `/mcp` is an MCP endpoint (streamable HTTP, stateless, JSON responses) on the same Railway service.
+    `market_snapshot` gives bid/ask, NY time, session, kill zone, session ATR, D1 ATR and key levels.
+    `market_candles` gives closed bars, up to 500, NY times. Both come from the bot's own cTrader client, so Gemini
+    maps on the same prices MAPEX trades on.
+  - **Intake.** `submit_gem1_map` validates and never trusts the map (`mapex/gemini_map.py`):
+    - every price must be a number inside `PRICE_BANDS`;
+    - each zone must follow the bias, sit on the side a retrace reaches, lie within 3 × D1 ATR, and have tp1/tp2
+      beyond it (else the objective is used);
+    - a missing or wrong-side root is replaced by the zone's far edge;
+    - session ATR, dealing range and time horizon are computed by MAPEX.
+    Bad zones are dropped with the reason. A map without CHAIN_A/B is refused. The accepted map is saved exactly
+    like a mapper map (`pipeline.save_map`), so GEM2 runs unchanged.
+  - **Security.** `/mcp` needs `MCP_TOKEN` (`?key=` or `Authorization: Bearer`, constant-time compare). Without the
+    token it returns 503; with a wrong key it returns 401. The token is redacted from logs. No tool can place,
+    change or close an order: a map only tells GEM2 where to watch, and trades still need 100/100 plus every guard.
+    `/health` stays public.
+  - **Staleness.** `MAP_MAX_AGE_H` (6) applies to Gemini maps. One critical Telegram alert per map is sent when a
+    kill zone runs on an expired map, or when a zone's thesis breaks (a D1 close past the root). The built-in
+    mapper no longer runs. Candles are still refreshed hourly for GEM2 and for Gemini.
+  - **Skill.** `docs/gemini/GEM1_SPARK_SKILL.md` replaces only GEM1's data source (MAPEX tools instead of
+    screenshots), its handoff (`submit_gem1_map`) and its horizon (intraday, as D-70). The rest of GEM1 is pasted
+    under it unchanged.
