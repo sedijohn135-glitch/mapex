@@ -131,6 +131,9 @@ def test_mcp_needs_the_token_and_gives_gemini_live_data(tmp_path, mkt):
         tools = rpc(c, "tools/list", key=None, headers={"Authorization": f"Bearer {TOKEN}"}).json()["result"]["tools"]
         assert {t["name"] for t in tools} == {"market_snapshot", "market_candles", "submit_gem1_map",
                                               "executor_status"}
+        hints = {t["name"]: t["annotations"]["readOnlyHint"] for t in tools}
+        assert hints == {"market_snapshot": True, "market_candles": True, "executor_status": True,
+                         "submit_gem1_map": False}  # lets Gemini skip the Allow prompt for reads
         snap = call(c, "market_snapshot", symbol="xauusd")
         assert snap["bid"] == round(price, 2) and snap["pdh"] == round(bars["D1"][-1].h, 2)
         assert snap["session_atr"] > 0 and snap["weekly_open"] is not None

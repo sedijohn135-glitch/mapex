@@ -12,6 +12,7 @@ import logging
 from urllib.parse import parse_qs
 
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 from starlette.responses import JSONResponse
 
 from mapex import gemini_map
@@ -23,6 +24,10 @@ from mapex.guards import kill_switch, open_trades
 from mapex.pipeline import current_map, save_map
 
 log = logging.getLogger("mapex.mcp")
+# Hints for the client's confirmation prompt: three tools only read; submit_gem1_map only replaces the map (no order,
+# and sending the same map twice changes nothing).
+READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True)
+MAP_IN = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
 TFS = ("M1", "M5", "M15", "H1", "H4", "D1", "W1", "MN1")
 MAX_CANDLES = 500
 # The owner's ICT clock, New York time (ICT Sniper V13 §3.2 kill zones, §3.3 macros = stated time ±10 min, §5.5
@@ -129,7 +134,7 @@ def build(app):
             q = app.quotes.fresh(sym, now)
         return q
 
-    @server.tool()
+    @server.tool(annotations=READ)
     async def market_snapshot(symbol: str) -> dict:
         """Live bid/ask, New York time, session, the ICT windows open now and the next one (kill zones, opening
         ranges, Silver Bullets, macros, NY Lunch), the GEM2 window where MAPEX may enter, session ATR, D1 ATR and the
@@ -160,7 +165,7 @@ def build(app):
             "decimals": dec, "price_band": app.s.price_bands.get(sym),
         }
 
-    @server.tool()
+    @server.tool(annotations=READ)
     async def market_candles(symbol: str, timeframe: str, count: int = 200) -> dict:
         """Closed candles from IC Markets, oldest first, as [time_ny, open, high, low, close].
         timeframe: M1, M5, M15, H1, H4, D1, W1 or MN1; count: up to 500."""
@@ -175,7 +180,7 @@ def build(app):
                 "bars": [[f"{ny(x.t):%Y-%m-%d %H:%M}", *(round(v, dec) for v in (x.o, x.h, x.l, x.c))]
                          for x in rows]}
 
-    @server.tool()
+    @server.tool(annotations=MAP_IN)
     async def submit_gem1_map(symbol: str, gem1_json: str) -> dict:
         """Send the complete GEM1 JSON (as text). MAPEX checks every price against live data; the accepted map
         replaces the previous one and the executor starts watching its CHAIN_A/B at once."""
@@ -200,7 +205,7 @@ def build(app):
                           for z in res.json["key_zones"]],
                 "valid_until_ny": fmt_ny(now + app.s.map_max_age_h * 3600), "warnings": res.meta["warnings"]}
 
-    @server.tool()
+    @server.tool(annotations=READ)
     async def executor_status(symbol: str) -> dict:
         """The map MAPEX is trading from, each zone's GEM2 state, the latest executor events and open MAPEX trades."""
         sym = symbol_of(symbol)
