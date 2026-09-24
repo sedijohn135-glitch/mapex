@@ -291,3 +291,7 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
   - **One call.** New tool `gem1_inputs`: the snapshot plus D1/H4/H1/M15 candles in one call.
   - **Debugging.** Every call is logged as `mcp <tool> <symbol>`. The Gem shows the exact error on a failure,
     with no "connect MAPEX" fallback.
+- **D-75** Telegram also announces each map accepted from Gemini. The owner asked for it after the first live Gem
+  map (map 20) arrived silently. It is one message per map id (deduplicated): bias, each zone with reach (near/far)
+  and TP1/TP2, when the map expires, and how many repairs MAPEX made. This is the only non-entry, non-critical
+  message. CLAUDE.md's Telegram rule is updated to match.

@@ -41,5 +41,5 @@ RREGULLA TË FORTA:
 - MAPEX prek vetëm pozicionet me label "MAPEX".
 - Parazgjedhja është `TRADING_MODE=paper`; llogaria live kërkon edhe `CONFIRM_LIVE_ACCOUNT=YES`.
 - GEM1 dhe GEM2 janë ligj: çdo rregull i tyre duhet të ekzistojë në kod dhe në `docs/TRACEABILITY.md`.
-- Telegram: vetëm hyrjet në treg + alarmet kritike, në shqip.
+- Telegram: vetëm hyrjet në treg + pranimi i hartës së Gemini (kërkesë e pronarit, D-75) + alarmet kritike, në shqip.
 - Puna përfundon në `main`.

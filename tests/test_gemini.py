@@ -145,6 +145,8 @@ def test_mcp_needs_the_token_and_gives_gemini_live_data(tmp_path, mkt):
         assert call(c, "submit_gem1_map", symbol="XAUUSD", gem1_json="{}")["accepted"] is False
         ok = call(c, "submit_gem1_map", symbol="XAUUSD", gem1_json=json.dumps(gem1(price, atr)))
         assert ok["accepted"] and ok["zones"][0]["id"] == "CHAIN_A"
+        note = app.store.one("SELECT text FROM outbox WHERE dedupe LIKE 'gemini-map:%'")["text"]
+        assert "Harta e Gemini u pranua — XAUUSD SELL" in note and "CHAIN_A" in note  # D-75: the owner sees it
         st = call(c, "executor_status", symbol="XAUUSD")
         assert st["map"]["source"] == "gemini" and not st["map"]["stale"] and st["zones"][0]["state"] == "WATCH"
     assert TOKEN not in json.dumps(app.health())

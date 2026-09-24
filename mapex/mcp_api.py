@@ -23,6 +23,7 @@ from mapex.core.timeutil import current_session, fmt_ny, killzone, market_open, 
 from mapex.executor.state import load_states
 from mapex.guards import kill_switch, open_trades
 from mapex.pipeline import current_map, save_map
+from mapex.telegram import msg_map_accepted
 
 log = logging.getLogger("mapex.mcp")
 # Gemini asks the owner to tap "Allow" for every tool it sees as a write. The owner asked for no tap (D-74), so, as in
@@ -240,12 +241,15 @@ def build(app):
             return {"accepted": False, "errors": exc.reasons}
         save_map(app.store, sym, now, res)
         _, meta = current_map(app.store, sym)
+        until = fmt_ny(now + app.s.map_max_age_h * 3600)
+        app.store.outbox_add(f"gemini-map:{sym}:{meta.get('map_id')}",
+                             msg_map_accepted(sym, res.json, until, len(res.meta["warnings"])), now=now)
         log.info("%s Gemini map %s accepted: bias=%s zones=%s", sym, meta.get("map_id"),
                  res.json["strategic_bias"], [z["id"] for z in res.json["key_zones"]])
         return {"accepted": True, "map_id": meta.get("map_id"), "bias": res.json["strategic_bias"],
                 "zones": [{k: z[k] for k in ("id", "zone_low", "zone_high", "time_horizon", "tp1", "tp2")}
                           for z in res.json["key_zones"]],
-                "valid_until_ny": fmt_ny(now + app.s.map_max_age_h * 3600), "warnings": res.meta["warnings"]}
+                "valid_until_ny": until, "warnings": res.meta["warnings"]}
 
     @server.tool(annotations=READ)
     async def executor_status(symbol: str) -> dict:
