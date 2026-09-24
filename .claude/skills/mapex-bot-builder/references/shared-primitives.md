@@ -28,6 +28,16 @@ Convert to percentages of current price so the same code works for BTCUSD:
   02:00–07:00 London, 07:00–19:00 New York.
 - GEM2 killzones (§P2): London 02:00–05:00, New York 08:30–11:00, Silver Bullet 10:00–11:00 and 14:00–15:00,
   Classic FX SB 03:00–04:00. Macro windows: `[HH:50, HH+1:10]`, last hour 15:00–16:00.
+- The owner's full ICT clock (ICT Sniper V13, D-72), for Gemini's mapping context only (entries stay in the GEM2
+  killzones above). The code copy is `mapex/mcp_api.py::ICT_TIMES`; `market_snapshot` returns `ict_now` / `ict_next`.
+  The same table is in `docs/gemini/GEM1_SPARK_SKILL.md` §5, so change all three together:
+  - Asian Range 19:00–00:00 (M5 only) · London Opening Range 01:30–02:00 · London Open KZ 02:00–05:00 · London
+    Silver Bullet 03:00–04:00 · European Open ref 06:00 · 6:30 ref · NY Opening Range 07:00–07:30 · NY Open KZ
+    07:00–10:00 (Judas 09:30–10:00) · Equities OR 09:30–10:00 · London Close 10:00–12:00 · AM Silver Bullet
+    10:00–11:00 · NY Lunch 12:00–13:00 (no trade) · PM OR 13:30–14:00 · PM Session 13:30–16:00 · PM Silver Bullet
+    14:00–15:00 · Last Hour 15:00–16:00.
+  - Macros are the stated time ±10 min: 02:33, 04:03, 08:00, 09:00, 10:00, 11:00, 12:00, 13:20, 15:00, and
+    15:15 / 15:40 / 15:50 / 16:00.
 - Market hours: XAUUSD closed Fri 17:00 → Sun 18:00 NY and daily 17:00–18:00; BTCUSD 24/7 (entries still only in
   the killzones above). No entries within `NO_ENTRY_BEFORE_CLOSE_MIN` (default 30) of a session close for XAUUSD.
 

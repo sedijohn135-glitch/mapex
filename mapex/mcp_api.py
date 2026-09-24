@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse
 from mapex import gemini_map
 from mapex.core import levels as lv
 from mapex.core import primitives as pr
-from mapex.core.timeutil import current_session, fmt_ny, killzone, ny, ny_midnight, week_start
+from mapex.core.timeutil import current_session, fmt_ny, killzone, market_open, ny, ny_at, ny_midnight, week_start
 from mapex.executor.state import load_states
 from mapex.guards import kill_switch, open_trades
 from mapex.pipeline import current_map, save_map
@@ -25,11 +25,62 @@ from mapex.pipeline import current_map, save_map
 log = logging.getLogger("mapex.mcp")
 TFS = ("M1", "M5", "M15", "H1", "H4", "D1", "W1", "MN1")
 MAX_CANDLES = 500
+# The owner's ICT clock, New York time (ICT Sniper V13 §3.2 kill zones, §3.3 macros = stated time ±10 min, §5.5
+# Silver Bullets). Context for Gemini only: MAPEX itself enters only inside the GEM2 kill zones (mapex_entry_window).
+ICT_TIMES = (
+    ("Asian Range (M5 high/low)", "19:00", "24:00"),
+    ("London Opening Range", "01:30", "02:00"),
+    ("London Open Kill Zone", "02:00", "05:00"),
+    ("London Silver Bullet", "03:00", "04:00"),
+    ("NY Opening Range", "07:00", "07:30"),
+    ("NY Open Kill Zone", "07:00", "10:00"),
+    ("Judas Swing window", "09:30", "10:00"),
+    ("Equities Opening Range (indices)", "09:30", "10:00"),
+    ("London Close", "10:00", "12:00"),
+    ("AM Silver Bullet", "10:00", "11:00"),
+    ("NY Lunch - no trade", "12:00", "13:00"),
+    ("PM Opening Range", "13:30", "14:00"),
+    ("PM Session", "13:30", "16:00"),
+    ("PM Silver Bullet", "14:00", "15:00"),
+    ("Last Hour", "15:00", "16:00"),
+    ("Macro London Open 02:33", "02:23", "02:43"),
+    ("Macro London Continuation 04:03", "03:53", "04:13"),
+    ("Macro Pre-NY Open", "07:50", "08:10"),
+    ("Macro Pre-Open", "08:50", "09:10"),
+    ("Macro NY Open", "09:50", "10:10"),
+    ("Macro London Close", "10:50", "11:10"),
+    ("Macro NY Lunch", "11:50", "12:10"),
+    ("Macro PM Session Start", "13:10", "13:30"),
+    ("Macro PM", "14:50", "15:10"),
+    ("Macro Last Hour 15:15", "15:05", "15:25"),
+    ("Macro Last Hour 15:40", "15:30", "15:50"),
+    ("Macro Last Hour 15:50", "15:40", "16:00"),
+    ("Macro Last Hour 16:00", "15:50", "16:10"),
+)
 INSTRUCTIONS = (
     "MAPEX is the owner's GEM2 executor on IC Markets cTrader. You are the GEM1 strategist: read prices only from "
     "market_snapshot and market_candles (times are New York), build the GEM1 map, send it with submit_gem1_map and "
     "fix whatever it reports. MAPEX then watches the zones and trades only when GEM2 scores 100."
 )
+
+
+def _min(hhmm: str) -> int:
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
+
+
+def ict_clock(symbol: str, now: float) -> dict:
+    """ICT windows open right now and the next one(s) to open, DST-safe; none while the symbol's market is shut."""
+    d = ny(now)
+    t = d.hour * 60 + d.minute
+    active = [n for n, a, b in ICT_TIMES if _min(a) <= t < _min(b)] if market_open(symbol, now) else []
+    starts = sorted((ny_at(now, *divmod(_min(a), 60), day), n, a, b) for day in range(4) for n, a, b in ICT_TIMES)
+    starts = [x for x in starts if x[0] > now and market_open(symbol, x[0] + 60)]
+    first = starts[0][0] if starts else None
+    return {"ict_now": active,
+            "ict_next": None if first is None else {
+                "windows": [f"{n} {a}-{b}" for s, n, a, b in starts if s == first],
+                "starts_ny": f"{ny(first):%a %H:%M}", "in_min": int((first - now) // 60)}}
 
 
 class TokenGate:
@@ -80,8 +131,9 @@ def build(app):
 
     @server.tool()
     async def market_snapshot(symbol: str) -> dict:
-        """Live bid/ask, New York time, session and kill zone, session ATR, D1 ATR and the key levels
-        (NY midnight open, weekly open, previous day/week/month high and low). Call it before mapping."""
+        """Live bid/ask, New York time, session, the ICT windows open now and the next one (kill zones, opening
+        ranges, Silver Bullets, macros, NY Lunch), the GEM2 window where MAPEX may enter, session ATR, D1 ATR and the
+        key levels (NY midnight open, weekly open, previous day/week/month high and low). Call it before mapping."""
         sym = symbol_of(symbol)
         now = app.clock()
         b = await bars(sym, now, ("M15", "H1", "D1", "W1", "MN1"))
@@ -98,7 +150,7 @@ def build(app):
         return {
             "symbol": sym, "time_ny": fmt_ny(now), "weekday_ny": ny(now).strftime("%A"),
             "bid": f(q.bid) if q else None, "ask": f(q.ask) if q else None, "spread": f(q.spread) if q else None,
-            "session": current_session(now), "killzone": killzone(now),
+            "session": current_session(now), "mapex_entry_window": killzone(now), **ict_clock(sym, now),
             "session_atr": f(s_atr), "d1_atr14": f(pr.atr(b["D1"], 14)) if len(b["D1"]) > 14 else None,
             "ny_midnight_open": f(lv.day_open_at(b["M15"], ny_midnight(now))),
             "weekly_open": f(lv.day_open_at(b["H1"], week_start(now))),

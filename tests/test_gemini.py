@@ -12,7 +12,9 @@ from mapex.core.timeutil import TF_SECONDS
 from mapex.ctrader.client import Quote
 from mapex.gemini_map import MapRejected, accept, parse
 from mapex.main import App
+from mapex.mcp_api import ict_clock
 from mapex.pipeline import current_map, run_executor, save_map
+from tests.helpers import ny_ts
 from tests.synth import market_m1
 
 TOKEN = "k" * 32
@@ -130,6 +132,7 @@ def test_mcp_needs_the_token_and_gives_gemini_live_data(tmp_path, mkt):
         snap = call(c, "market_snapshot", symbol="xauusd")
         assert snap["bid"] == round(price, 2) and snap["pdh"] == round(bars["D1"][-1].h, 2)
         assert snap["session_atr"] > 0 and snap["weekly_open"] is not None
+        assert {"mapex_entry_window", "ict_now", "ict_next"} <= set(snap)
         got = call(c, "market_candles", symbol="XAUUSD", timeframe="m15", count=3)
         assert len(got["bars"]) == 3 and got["bars"][-1][4] == round(bars["M15"][-1].c, 2)
         assert call(c, "submit_gem1_map", symbol="XAUUSD", gem1_json="{}")["accepted"] is False
@@ -164,3 +167,13 @@ def test_old_gemini_map_alerts_once(tmp_path, mkt):
         app.gemini_alert("XAUUSD", now + 7 * 3600, res)  # 03:00 NY London kill zone
     sent = app.store.all("SELECT text FROM outbox WHERE dedupe LIKE 'gemini-%'")
     assert len(sent) == 1 and "skadoi" in sent[0]["text"]
+
+
+def test_ict_clock_knows_every_window_of_the_owners_prompt():
+    c = ict_clock("XAUUSD", ny_ts(2026, 9, 22, 10, 55))  # Tuesday
+    assert c["ict_now"] == ["London Close", "AM Silver Bullet", "Macro London Close"]
+    assert c["ict_next"] == {"windows": ["Macro NY Lunch 11:50-12:10"], "starts_ny": "Tue 11:50", "in_min": 55}
+    assert ict_clock("XAUUSD", ny_ts(2026, 9, 22, 12, 30))["ict_now"] == ["NY Lunch - no trade"]
+    assert ict_clock("XAUUSD", ny_ts(2026, 9, 22, 1, 0))["ict_next"]["windows"] == ["London Opening Range 01:30-02:00"]
+    weekend = ict_clock("XAUUSD", ny_ts(2026, 9, 25, 17, 30))  # Friday after the close: gold is shut
+    assert weekend["ict_now"] == [] and weekend["ict_next"]["starts_ny"] == "Sun 19:00"
