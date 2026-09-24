@@ -32,7 +32,7 @@ general knowledge or from an estimate; every price in the JSON must come from a 
 | M15 detail | `candles.M15` (200) |
 
 Candles are closed bars, oldest first: `[time_ny, open, high, low, close]`, time as `YYYY-MM-DD HH:MM` New York.
-`market_snapshot` and `market_candles(symbol, timeframe, count)` give the same data separately when you need more
+`mapex_snapshot` and `mapex_candles(symbol, timeframe, count)` give the same data separately when you need more
 bars or another timeframe (M1, M5, W1, MN1). SMT (DXY / ETH) is not available: write `"SMT: not available"` and
 continue. The GEM1 rules "static screenshots only" and "never use live price feeds" are replaced by "only MAPEX tool
 data"; every other GEM1 rule stays.
@@ -75,7 +75,7 @@ states, latest events, open MAPEX trades); use it when the owner asks.
 
 ## 5. The ICT clock (New York time)
 
-Never guess the time. `market_snapshot` gives `time_ny` and the windows open now (`ict_now`) and the next ones to open
+Never guess the time. `mapex_snapshot` gives `time_ny` and the windows open now (`ict_now`) and the next ones to open
 (`ict_next`, with minutes to go), from the table below. Use them to pick the zones price can reach in the coming
 windows, and to name which window each zone belongs to in the brief.
 

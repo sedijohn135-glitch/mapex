@@ -276,3 +276,18 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
   whole Instructions field: the MAPEX rules (commands, tools, intraday horizon, the ICT clock) followed by the full
   GEM1 prompt. `tests/test_gemini.py` keeps its GEM1 part identical to `docs/source/GEM1.md` and checks that every
   ICT window in `mcp_api.ICT_TIMES` appears in it.
+- **D-74** The Gem connects to the owner's Live Validator without an Allow tap, but not to MAPEX. Changes, copied from
+  the Live Validator (`app/main.py`, `app/tools.py`):
+  - **No Allow.** Gemini asks the owner to allow every tool it sees as a write. Every MAPEX tool is now advertised
+    `readOnlyHint: true`, `submit_gem1_map` included: it only replaces the map the executor watches, never places or
+    touches an order, and a repeat changes nothing. This is a deviation the owner asked for, as in the Live
+    Validator's D14. Trades still need GEM2 100/100 plus every guard.
+  - **Browser.** Gemini in a browser (the owner uses Brave) calls `/mcp` cross-origin. `/mcp` now:
+    - answers CORS for `gemini.google.com` / `gemini.googleusercontent.com`;
+    - lets preflights pass without the key (a bare one gets 204);
+    - marks every answer no-store, so Brave does not stay on "Working on it…".
+  - **Names.** The Live Validator also has `market_snapshot` and `market_candles`. MAPEX's are renamed
+    `mapex_snapshot` and `mapex_candles`, so no two connectors share a tool name.
+  - **One call.** New tool `gem1_inputs`: the snapshot plus D1/H4/H1/M15 candles in one call.
+  - **Debugging.** Every call is logged as `mcp <tool> <symbol>`. The Gem shows the exact error on a failure,
+    with no "connect MAPEX" fallback.

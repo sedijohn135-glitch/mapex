@@ -129,19 +129,17 @@ def test_mcp_needs_the_token_and_gives_gemini_live_data(tmp_path, mkt):
         assert rpc(c, "tools/list", key=None).status_code == 401
         assert rpc(c, "tools/list", key="wrong").status_code == 401
         tools = rpc(c, "tools/list", key=None, headers={"Authorization": f"Bearer {TOKEN}"}).json()["result"]["tools"]
-        assert {t["name"] for t in tools} == {"gem1_inputs", "market_snapshot", "market_candles", "submit_gem1_map",
+        assert {t["name"] for t in tools} == {"gem1_inputs", "mapex_snapshot", "mapex_candles", "submit_gem1_map",
                                               "executor_status"}
-        hints = {t["name"]: t["annotations"]["readOnlyHint"] for t in tools}
-        assert hints == {"gem1_inputs": True, "market_snapshot": True, "market_candles": True,
-                         "executor_status": True, "submit_gem1_map": False}  # lets Gemini skip Allow for reads
+        assert all(t["annotations"]["readOnlyHint"] for t in tools)  # D-74: Gemini runs them without "Allow"
         one = call(c, "gem1_inputs", symbol="XAUUSD")  # one Allow for all GEM1 data
         assert one["snapshot"]["bid"] == round(price, 2) and set(one["candles"]) == {"D1", "H4", "H1", "M15"}
         assert one["candles"]["H1"][-1][4] == round(bars["H1"][-1].c, 2) and len(one["candles"]["D1"]) <= 200
-        snap = call(c, "market_snapshot", symbol="xauusd")
+        snap = call(c, "mapex_snapshot", symbol="xauusd")
         assert snap["bid"] == round(price, 2) and snap["pdh"] == round(bars["D1"][-1].h, 2)
         assert snap["session_atr"] > 0 and snap["weekly_open"] is not None
         assert {"mapex_entry_window", "ict_now", "ict_next"} <= set(snap)
-        got = call(c, "market_candles", symbol="XAUUSD", timeframe="m15", count=3)
+        got = call(c, "mapex_candles", symbol="XAUUSD", timeframe="m15", count=3)
         assert len(got["bars"]) == 3 and got["bars"][-1][4] == round(bars["M15"][-1].c, 2)
         assert len(got["bars"][-1][0]) == 16 and got["bars"][-1][0][4] == "-"  # "YYYY-MM-DD HH:MM" (D1 needs dates)
         assert call(c, "submit_gem1_map", symbol="XAUUSD", gem1_json="{}")["accepted"] is False
@@ -150,6 +148,20 @@ def test_mcp_needs_the_token_and_gives_gemini_live_data(tmp_path, mkt):
         st = call(c, "executor_status", symbol="XAUUSD")
         assert st["map"]["source"] == "gemini" and not st["map"]["stale"] and st["zones"][0]["state"] == "WATCH"
     assert TOKEN not in json.dumps(app.health())
+
+
+def test_gemini_in_a_browser_gets_cors_and_no_store(tmp_path, mkt):
+    app = service(tmp_path, mkt, MCP_TOKEN=TOKEN)
+    with TestClient(app.asgi()) as c:
+        pre = c.options("/mcp", headers={"Origin": "https://gemini.google.com", "Access-Control-Request-Method": "POST",
+                                         "Access-Control-Request-Headers": "content-type,mcp-protocol-version"})
+        assert pre.status_code == 200 and pre.headers["access-control-allow-origin"] == "https://gemini.google.com"
+        assert c.options("/mcp").status_code == 204  # a bare preflight never meets the key check
+        r = rpc(c, "tools/list", headers={"Origin": "https://gemini.google.com"})
+        assert r.headers["access-control-allow-origin"] == "https://gemini.google.com"
+        assert r.headers["cache-control"].startswith("no-store")
+        evil = c.options("/mcp", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
+        assert "access-control-allow-origin" not in evil.headers
 
 
 def test_mcp_is_closed_without_a_token_and_mapex_mapper_is_off(tmp_path, mkt):
@@ -198,7 +210,7 @@ def test_gem_instructions_carry_gem1_the_tools_and_the_ict_clock():
     root = Path(__file__).resolve().parent.parent
     text = (root / "docs/gemini/GEM_INSTRUCTIONS.md").read_text()
     assert text.endswith((root / "docs/source/GEM1.md").read_text())  # GEM1 changed: rebuild and re-paste the Gem
-    assert all(t in text for t in ("gem1_inputs", "market_snapshot", "market_candles", "submit_gem1_map",
+    assert all(t in text for t in ("gem1_inputs", "mapex_snapshot", "mapex_candles", "submit_gem1_map",
                                    "executor_status"))
     for name, start, end in ICT_TIMES:
         if not name.startswith("Macro"):

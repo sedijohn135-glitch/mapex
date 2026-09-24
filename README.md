@@ -26,7 +26,7 @@ mapex/
   telegram.py    Albanian messages, outbox, commands
   replay.py      historical replay with simulated fills (/replay SYMBOL DAYS)
   gemini_map.py  D-71 intake: validates a GEM1 JSON from Gemini into an executor map
-  mcp_api.py     /mcp (MCP_TOKEN): market_snapshot, market_candles, submit_gem1_map, executor_status
+  mcp_api.py     /mcp (MCP_TOKEN): mapex_snapshot, mapex_candles, submit_gem1_map, executor_status
 docs/            SETUP_SQ, RULES_SQ, SPEC, DECISIONS, TRACEABILITY, source/GEM1.md, source/GEM2.md,
                  gemini/GEM_INSTRUCTIONS.md (the Gemini Gem's Instructions: rules + ICT clock + GEM1)
 ```
