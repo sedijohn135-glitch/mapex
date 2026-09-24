@@ -11,11 +11,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import sqlite3
 import time
 
 from mapex import guards
-from mapex.config import LIVE_LABEL, Settings
+from mapex.config import DEFAULT_PIP_DIGITS, LIVE_LABEL, Settings
 from mapex.ctrader.client import AuthError, ToolError, TransportError
 from mapex.ctrader.decode import (
     DecodeError,
@@ -44,7 +45,13 @@ class LiveVenue:
         self.s = settings
 
     def digits(self, symbol: str) -> int:
-        return self.client.digits[symbol]
+        """Points scale for relative SL/TP: the calibrated pipette digits; when spot came as display floats (0),
+        the symbol metadata or the precision-table default."""
+        d = self.client.digits.get(symbol, 0)
+        if d > 0:
+            return d
+        meta = self.client.meta_digits(symbol)
+        return meta if meta is not None else int(self.s.price_digits.get(symbol, DEFAULT_PIP_DIGITS.get(symbol, 2)))
 
     def supports_range(self) -> bool:
         props = self.client.tools.get("create_order") or set()
@@ -146,16 +153,23 @@ class TradeManager:
             raise
 
     # ------------------------------------------------------------- entry
+    def points_digits(self, sym: str) -> int:
+        """Digits for relative points: a scale proven by a real fill (kv) wins over the venue's own."""
+        learned = self.store.get(f"points_digits:{sym}")
+        return int(learned) if learned is not None else self.venue.digits(sym)
+
     def build_order(self, plan) -> dict:
         sym = plan.symbol
         band = self.s.price_bands[sym]
-        d = self.venue.digits(sym)
+        d = self.points_digits(sym)
+        # MAX_SLIPPAGE_POINTS is written for the precision-table digits (XAUUSD 3, BTCUSD 2): keep its price value
+        slip = max(1, round(float(self.s.max_slippage_points[sym]) * 10 ** (d - DEFAULT_PIP_DIGITS.get(sym, d))))
         dec = self._dec(sym)
         decision = price_field(plan.decision_price, dec, band)
         sl, tp = price_field(plan.sl, dec, band), price_field(plan.tp_server, dec, band)
         cents = check_volume(self.s.lots.get(sym), self.s.contract_size[sym], self.s.max_lot)
         args = {"orderType": "MARKET_RANGE", "tradeSide": "BUY" if plan.side == "buy" else "SELL", "volume": cents,
-                "baseSlippagePrice": decision, "slippageInPoints": int(self.s.max_slippage_points[sym]),
+                "baseSlippagePrice": decision, "slippageInPoints": int(slip),
                 "relativeStopLoss": to_points(abs(decision - sl), d),
                 "relativeTakeProfit": to_points(abs(tp - decision), d),
                 "label": LIVE_LABEL, "comment": plan.setup_key}
@@ -178,7 +192,7 @@ class TradeManager:
         info = {"zone_label": plan.zone_label, "root_type": plan.root_type, "root_price": plan.root_price,
                 "root_lps": plan.root_lps, "sweep_count": plan.sweep_count, "sweep_type": plan.sweep_type,
                 "session": plan.session, "model": short_model(plan.strategy_used, plan.model), "r_tp1": plan.r_tp1,
-                "r_tp2": plan.r_tp2, "order": args}
+                "r_tp2": plan.r_tp2, "order": args, "points_digits": self.points_digits(plan.symbol)}
         try:
             with self.store.tx():  # the claim: UNIQUE(setup_key) is the lock
                 self.store.execute(
@@ -269,6 +283,7 @@ class TradeManager:
             p = await self._read(pid)
         if p is None:
             return "open (position not visible yet)"
+        self._learn_points_scale(t, p)
         step = VOLUME_STEP.get(sym, 1)
         if abs(p["volume"] - t["volume_cents"]) > step:
             await self._safe(key, "close_position", self.venue.close_position, pid, p["volume"])
@@ -294,6 +309,26 @@ class TradeManager:
         self._update(key, state="CLOSING", closed_at=int(self.clock()))
         guards.trip(self.store, "verifikimi i urdhrit dështoi", self.clock())
         return "closed: verification failed"
+
+    def _learn_points_scale(self, t, p: dict) -> None:
+        """If the broker applied the relative SL at a different power of ten than intended, remember the real
+        scale for the next order (this one is exactified by the amend that follows) and say so once."""
+        info = json.loads(t["info"] or "{}")
+        used = info.get("points_digits")
+        if used is None or p.get("sl") is None or p.get("entry") is None or not t["entry_planned"]:
+            return
+        intended = abs(t["entry_planned"] - t["sl"])
+        actual = abs(p["entry"] - p["sl"])
+        if intended <= 0 or actual <= 0:
+            return
+        k = round(math.log10(actual / intended))
+        if k == 0 or abs(actual / intended / 10**k - 1) > 0.25:
+            return
+        real = int(used) - k
+        self.store.put(f"points_digits:{t['symbol']}", str(real))
+        self.store.outbox_add(f"points:{t['symbol']}:{real}",
+                              f"ℹ️ {t['symbol']}: njësia e SL/TP relative te brokeri u mësua (shifra {real}). "
+                              "SL/TP u vendosën saktë me korrigjim; urdhrat e ardhshëm e përdorin direkt.")
 
     def notify_entry(self, key: str) -> None:
         t = self.trade(key)

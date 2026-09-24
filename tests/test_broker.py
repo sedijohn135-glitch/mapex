@@ -384,3 +384,25 @@ def test_market_closed_blocks_before_any_call():
 
     r, out = go(t())
     assert out.startswith("blocked") and "market_closed" in out and r.calls("create_order") == []
+
+
+def test_relative_points_scale_is_learned_from_the_first_fill():
+    """If the broker reads relative points at another power of ten, the fill is exactified by the amend and the
+    next order uses the proven scale."""
+    async def t():
+        fake = FakeCTrader()
+        fake.points_digits["XAUUSD"] = 2  # server: 1 point = 0.01, MAPEX assumed 0.001
+        r = await Rig(fake).start()
+        first = await r.tm.execute(plan(), QUOTE)
+        r.db.execute("UPDATE trades SET state='CLOSED' WHERE setup_key=?", ("MPX-XAU-0922-abc-1-A",))
+        r.fake.positions.clear()
+        second = await r.tm.execute(plan(key="MPX-XAU-0922-abc-2-A"), QUOTE)
+        return r, first, second
+
+    r, first, second = go(t())
+    assert first == "open" and second == "open"
+    co = r.calls("create_order")
+    assert co[0]["relativeStopLoss"] == 6700 and co[1]["relativeStopLoss"] == 670
+    assert r.db.get("points_digits:XAUUSD") == "2"
+    assert all(a["stopLoss"] == 2643.5 for a in r.calls("amend_position"))  # both trades exactified
+    assert any("njësia e SL/TP" in x["text"] for x in r.db.all("SELECT text FROM outbox"))

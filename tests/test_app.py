@@ -134,3 +134,17 @@ def test_tracebacks_are_redacted_too():
     f.filter(rec)
     out = logging.Formatter().format(rec)
     assert "SECRETSECRET" not in out and "send failed" in out
+
+
+def test_startup_message_explains_each_symbol(tmp_path):
+    fake = FakeCTrader()
+    fake.quotes["BTCUSD"] = (5.0, 5.1, 0)  # a price no digits can decode into the BTC band
+    s = config.load({"DATA_DIR": str(tmp_path), "CTRADER_MCP_TOKEN": tok("demo"), "LOT_XAUUSD": "5.0",
+                     "LOT_BTCUSD": "0.01"})
+    app = App(s, clock=lambda: NOW, connector=connector_for(build_server(fake)))
+    asyncio.run(app.startup())
+    boot = app.store.one("SELECT text FROM outbox WHERE dedupe LIKE 'boot:%'")["text"]
+    assert "⛔ XAUUSD: loti refuzohet" in boot and "MAX_LOT" in boot
+    assert "⛔ BTCUSD: çmimet nuk u dekoduan (bid i marrë:" in boot
+    stop = app.store.one("SELECT text FROM outbox WHERE dedupe LIKE 'kill:%'")["text"]
+    assert "bid i marrë" in stop

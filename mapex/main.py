@@ -147,8 +147,8 @@ class App:
             if sym in self.s.lots and sym in self.active:
                 log.info(config.lot_mapping_line(sym, self.s.lots[sym], self.s.contract_size[sym]))
         lots = {k: v for k, v in self.s.lots.items() if k in self.active or not self.client.configured}
-        self.store.outbox_add(f"boot:{boot}", msg_startup(self.mode, self.env, lots, self.s, self.forced_paper, notes),
-                              critical=True, now=now)
+        self.store.outbox_add(f"boot:{boot}", msg_startup(self.mode, self.env, lots, self.s, self.forced_paper, notes,
+                                                          self.symbol_status()), critical=True, now=now)
         if self.leader and self.active:
             with contextlib.suppress(CTraderError):
                 await self.tm.reconcile()
@@ -173,17 +173,33 @@ class App:
                 self.active.append(sym)
                 self.disabled.pop(sym, None)
             except DecodeError as exc:
-                self.disabled[sym] = str(exc)
-                guards.trip(self.store, f"çmimet nuk u dekoduan ({sym})", self.clock())
+                self.disabled[sym] = f"çmimet nuk u dekoduan (bid i marrë: {self.client.raw_bid.get(sym)})"
+                log.warning("%s calibration: %s", sym, exc)
+                guards.trip(self.store, f"çmimet nuk u dekoduan ({sym}: bid i marrë "
+                                        f"{self.client.raw_bid.get(sym)})", self.clock())
             except CTraderError as exc:
                 self.disabled[sym] = str(exc)
+
+    def symbol_status(self) -> dict[str, str]:
+        """Why each configured symbol will not trade (empty when it will)."""
+        out = {}
+        for sym in self.s.symbols:
+            if sym in self.disabled:
+                out[sym] = self.disabled[sym]
+            elif sym not in self.s.lots:
+                raw = next((e for e in self.s.errors if f"LOT_{sym}" in e), None)
+                out[sym] = f"loti refuzohet ({raw})" if raw else f"mungon LOT_{sym}"
+            elif self.client.configured and sym not in self.active:
+                out[sym] = "pa lidhje me cTrader"
+        return out
 
     def on_auth_error(self) -> None:
         now = self.clock()
         since = self.client.auth_error_since or now
         if not self.auth_alerted:
             self.auth_alerted = True
-            self.store.outbox_add(f"auth:{int(since)}", msg_token_expired(), critical=True, now=now)
+            self.store.outbox_add(f"auth:{int(since)}", msg_token_expired(self.client.last_auth_detail),
+                                  critical=True, now=now)
         if now - since > AUTH_TRIP_S:
             guards.trip(self.store, "tokeni i cTrader nuk pranohet prej >15 min", now)
 

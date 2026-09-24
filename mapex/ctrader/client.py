@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from mapex.core.primitives import Bar
@@ -22,7 +23,10 @@ from mapex.ctrader.decode import calibrate_digits, to_display
 
 log = logging.getLogger("mapex.ctrader")
 
-AUTH_RE = re.compile(r"unauthori|forbidden|expired|invalid token|session|\b401\b|\b403\b", re.I)
+AUTH_RE = re.compile(r"unauthori|forbidden|expired|invalid token|\b401\b|\b403\b", re.I)
+# MCP transport sessions (Mcp-Session-Id) also fail with "session" errors: reconnect first, never an auth alarm
+# on its own (DECISIONS D-61). A token that really expired fails the reconnect with 401 -> AuthError.
+SESSION_RE = re.compile(r"session", re.I)
 RATE_RE = re.compile(r"rate limit|too many requests|\b429\b", re.I)
 HISTORICAL_TOOLS = {"get_trendbars", "get_order_history", "get_deals"}
 MUTATIONS = {"create_order", "amend_order", "cancel_order", "amend_position", "close_position"}
@@ -96,7 +100,9 @@ async def http_connector(url: str, token: str):
 
 def _classify(text: str) -> CTraderError:
     if AUTH_RE.search(text or ""):
-        return AuthError("cTrader authorisation failed")
+        return AuthError((text or "unauthorised")[:200])
+    if SESSION_RE.search(text or ""):
+        return TransportError((text or "session")[:200])
     return ToolError((text or "tool error")[:500])
 
 
@@ -111,7 +117,11 @@ class CTraderClient:
         self.session = None
         self.tools: dict[str, set[str]] = {}
         self.symbol_map: dict[str, dict] = {}
-        self.digits: dict[str, int] = {}
+        self.digits: dict[str, int] = {}  # spot encoding, calibrated on a live bid
+        self.bar_digits: dict[str, int] = {}  # trendbar encoding, calibrated on the last close
+        self.bands: dict[str, list[float]] = {}
+        self.raw_bid: dict[str, float] = {}
+        self.last_auth_detail: str | None = None
         self.general = RateLimiter(50)
         self.historical = RateLimiter(5)
         self.auth_error_since: float | None = None
@@ -162,13 +172,13 @@ class CTraderClient:
     def _wrap(self, exc: BaseException) -> CTraderError:
         if isinstance(exc, CTraderError):
             return exc
-        text = f"{type(exc).__name__}: {exc}"
+        text = f"{type(exc).__name__}: {exc}".replace(self.token or "\0", "***")
         status = getattr(getattr(exc, "response", None), "status_code", None)
         if status in (401, 403) or AUTH_RE.search(text):
-            return AuthError("cTrader authorisation failed")
+            return AuthError(f"HTTP {status}: {text[:200]}" if status else text[:200])
         if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
             return TransportError("timeout")
-        return TransportError(text[:300].replace(self.token or "\0", "***"))
+        return TransportError(text[:300])
 
     def _filter_args(self, tool: str, args: dict) -> dict:
         """Schema-fields-only enforcement (playbook 1.5): drop keys the live schema does not declare."""
@@ -187,8 +197,9 @@ class CTraderClient:
         for attempt in range(attempts):
             try:
                 return await self._call_once(tool, args)
-            except AuthError:
+            except AuthError as exc:
                 self.auth_error_since = self.auth_error_since or self.clock()
+                self.last_auth_detail = str(exc).replace(self.token or "\0", "***")[:200]
                 raise
             except ToolError as exc:
                 if not mutation and RATE_RE.search(str(exc)) and attempt + 1 < attempts:
@@ -229,7 +240,7 @@ class CTraderClient:
         except ValueError:
             data = {"text": text}
         if isinstance(data, str) and AUTH_RE.search(data):
-            raise AuthError("cTrader authorisation failed")
+            raise AuthError(data[:200])
         return data if isinstance(data, dict) else {"result": data}
 
     # ------------------------------------------------------------- symbols & digits
@@ -260,7 +271,9 @@ class CTraderClient:
         raw = await self.raw_spot([name])
         if name not in raw:
             raise ToolError(f"no live quote for {name}")
-        d = calibrate_digits(int(raw[name]["bid"]), [self.meta_digits(name), *candidates], band)
+        self.raw_bid[name] = float(raw[name]["bid"])
+        self.bands[name] = band
+        d = calibrate_digits(self.raw_bid[name], [self.meta_digits(name), *candidates], band)
         self.digits[name] = d
         return d
 
@@ -292,8 +305,8 @@ class CTraderClient:
     async def trendbars(self, name: str, tf: str, frm: int, to: int) -> list[Bar]:
         """Closed-and-forming bars in [frm, to), chunked into <= 720 h windows, deduped by open time (Q-R7)."""
         await self.load_symbols()
-        sid, d = self.symbol_id(name), self.digits[name]
-        bars: dict[int, Bar] = {}
+        sid = self.symbol_id(name)
+        bars: dict[int, Bar] = {}  # raw (unscaled) values; scaled once the encoding is known
         start = frm
         while start < to:
             end = min(to, start + MAX_WINDOW_S)
@@ -302,14 +315,21 @@ class CTraderClient:
                 data = await self.call("get_trendbars", {"symbolId": sid, "period": PERIODS[tf],
                                                          "fromTimestamp": cursor * 1000, "toTimestamp": end * 1000})
                 rows = data.get("trendbars") or data.get("trendBars") or data.get("bars") or []
-                parsed = [b for b in (parse_trendbar(r, d) for r in rows) if b is not None]
+                parsed = [b for b in (parse_trendbar(r, 0) for r in rows) if b is not None]
                 for b in parsed:
                     bars[b.t] = b
                 if not data.get("hasMore") or not parsed or max(b.t for b in parsed) + 1 >= end:
                     break
                 cursor = max(b.t for b in parsed) + 1
             start = end
-        return [bars[t] for t in sorted(bars) if frm <= t < to]
+        raw = [bars[t] for t in sorted(bars) if frm <= t < to]
+        if not raw:
+            return raw
+        if name not in self.bar_digits:  # trendbars may be encoded differently from spot: prove it on a close
+            self.bar_digits[name] = calibrate_digits(raw[-1].c, [self.digits.get(name)],
+                                                     self.bands.get(name, [0, 1e12]))
+        k = 10 ** self.bar_digits[name]
+        return [Bar(b.t, b.o / k, b.h / k, b.l / k, b.c / k) for b in raw]
 
 
 def parse_trendbar(row: dict[str, Any], digits: int) -> Bar | None:
@@ -317,7 +337,9 @@ def parse_trendbar(row: dict[str, Any], digits: int) -> Bar | None:
         ts = row.get("timestamp")
         if ts is None and row.get("utcTimestampInMinutes") is not None:
             ts = int(row["utcTimestampInMinutes"]) * 60_000
-        ts = int(ts) // 1000
+        if isinstance(ts, str) and not ts.strip().isdigit():
+            ts = datetime.fromisoformat(ts.strip().replace("Z", "+00:00")).timestamp() * 1000
+        ts = int(float(ts)) // 1000
         if "open" in row and "close" in row:
             o, h, l, c = (float(row[k]) for k in ("open", "high", "low", "close"))
         else:

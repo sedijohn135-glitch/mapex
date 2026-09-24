@@ -47,30 +47,38 @@ def in_band(price: float, band: list[float] | tuple[float, float]) -> bool:
     return band[0] <= price <= band[1]
 
 
-def calibrate_digits(raw_bid: int, candidates: list[int | None], band: list[float]) -> int:
-    """First resolved digits (metadata -> PRICE_DIGITS -> precision table) that decodes the live bid inside the
-    sanity band. Never guesses: if none fits, raise."""
+def calibrate_digits(raw_bid: float, candidates: list[int | None], band: list[float]) -> int:
+    """Digits that decode the live bid into the sanity band: first the resolved ones (metadata -> PRICE_DIGITS ->
+    precision table); then band calibration — the band is narrower than 10x, so at most one power of ten can land
+    inside it (display floats decode with 0). No unique answer -> raise (the symbol is disabled, never guessed)."""
+    v = float(raw_bid)
     for d in candidates:
-        if d is None:
-            continue
-        if in_band(raw_bid / 10**d, band):
+        if d is not None and in_band(v / 10**d, band):
             return int(d)
-    raise DecodeError(f"no digits in {candidates} decode bid {raw_bid} into band {band}")
+    fits = [d for d in range(9) if in_band(v / 10**d, band)]
+    if band[1] < 10 * band[0] and len(fits) == 1:
+        return fits[0]
+    raise DecodeError(f"bid {raw_bid} decodes into band {band} with no unique digits (tried {candidates}, 0..8)")
 
 
 def decode_position_price(value, digits: int, band: list[float]) -> float | None:
-    """Position/deal prices: display floats per Q-K19, pipettes per the Remote doc. Accept whichever lands in the
-    sanity band; anything else is None (treated as missing)."""
+    """Position/deal prices: display floats (Q-K19) or pipettes (Remote doc). Accept whichever encoding lands in
+    the sanity band (display first, then the symbol's digits, then the unique power of ten); else None."""
     if value is None:
         return None
-    v = float(value)
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
     if v == 0:
         return None
-    if in_band(v, band):
-        return v
-    if in_band(v / 10**digits, band):
-        return v / 10**digits
-    return None
+    for d in (0, digits):
+        if in_band(v / 10**d, band):
+            return v / 10**d
+    try:
+        return v / 10 ** calibrate_digits(v, [], band)
+    except DecodeError:
+        return None
 
 
 def check_volume(lots: float | None, contract_size: float, max_lot: float) -> Cents:
