@@ -32,6 +32,7 @@ class FakeCTrader:
         self.bar_encoding = "pipettes"
         self.points_digits: dict[str, int] = {}  # how the server reads relative SL/TP points (default: digits)
         self.fail_once: dict[str, str] = {}
+        self.fail_symbol: dict[int, int] = {}  # symbolId -> number of spot calls answered "Session not found"
 
     # ------------------------------------------------------------ helpers
     def sym(self, sid: int) -> str:
@@ -103,6 +104,10 @@ def build_server(fake: FakeCTrader) -> MCPServer:
     @srv.tool()
     def get_spot_prices(symbolId: list[int]) -> dict:
         fake.log("get_spot_prices", {"symbolId": symbolId})
+        for sid in symbolId:
+            if fake.fail_symbol.get(sid, 0) > 0:
+                fake.fail_symbol[sid] -= 1
+                raise ToolError("Session not found; re-initialize")
         known = {sid: n for n, (sid, _) in SYMBOLS.items()}
         if any(s not in known for s in symbolId):
             return {"prices": []}  # Q-R8 batch poisoning
