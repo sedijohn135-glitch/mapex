@@ -150,15 +150,17 @@ def test_startup_message_explains_each_symbol(tmp_path):
     assert "bid i marrë" in stop
 
 
-def test_symbol_disabled_by_a_lost_session_is_reactivated(tmp_path):
+def test_symbol_disabled_by_a_lost_session_is_reactivated(tmp_path, monkeypatch):
+    monkeypatch.setattr("mapex.ctrader.client.BACKOFF_S", 0)
     fake = FakeCTrader()
-    fake.fail_symbol[101] = 6  # BTCUSD spot fails through all start-up retries
+    fake.fail_symbol[101] = 1000  # BTCUSD spot keeps failing through every start-up retry
     s = config.load({"DATA_DIR": str(tmp_path), "CTRADER_MCP_TOKEN": tok("demo"), "LOT_XAUUSD": "0.1",
                      "LOT_BTCUSD": "0.01"})
     app = App(s, clock=lambda: NOW, connector=connector_for(build_server(fake)))
     asyncio.run(app.startup())
     boot = app.store.one("SELECT text FROM outbox WHERE dedupe LIKE 'boot:%'")["text"]
     assert app.active == ["XAUUSD"] and "⛔ BTCUSD" in boot and "Session not found" in boot
+    fake.fail_symbol[101] = 0
     asyncio.run(app.heartbeat_tick())
     assert set(app.active) == {"XAUUSD", "BTCUSD"} and app.disabled == {}
     assert "✅ BTCUSD u aktivizua · Lot 0.01" in [r["text"] for r in app.store.all("SELECT text FROM outbox")]

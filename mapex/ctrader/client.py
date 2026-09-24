@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from mapex.core.primitives import Bar
@@ -28,12 +28,14 @@ AUTH_RE = re.compile(r"unauthori|forbidden|expired|invalid token|\b401\b|\b403\b
 # MCP transport sessions (Mcp-Session-Id) also fail with "session" errors: reconnect first, never an auth alarm
 # on its own (DECISIONS D-61). A token that really expired fails the reconnect with 401 -> AuthError.
 SESSION_RE = re.compile(r"session", re.I)
+LOST_SESSION_RE = re.compile(r"session (not found|terminated|expired)|re-?initiali[sz]e|no valid session", re.I)
 RATE_RE = re.compile(r"rate limit|too many requests|\b429\b", re.I)
 HISTORICAL_TOOLS = {"get_trendbars", "get_order_history", "get_deals"}
 MUTATIONS = {"create_order", "amend_order", "cancel_order", "amend_position", "close_position"}
 MAX_WINDOW_S = 720 * 3600  # Q-R7
 READ_RETRIES = 2
-SESSION_RETRIES = 5  # a read that hits "Session not found; re-initialize" is retried on a new session
+SESSION_RETRIES = 5  # "Session not found; re-initialize" is resent on the same session (D-65)
+BACKOFF_S = 0.3
 
 
 class CTraderError(Exception):
@@ -96,8 +98,38 @@ async def http_connector(url: str, token: str):
 
     async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"},
                                   timeout=httpx2.Timeout(30.0, read=60.0)) as http:
-        async with Client(streamable_http_client(url, http_client=http), read_timeout_seconds=30) as client:
+        # no DELETE on exit: the server answers 404 to every one (Railway logs); it expires sessions itself
+        transport = streamable_http_client(url, http_client=http, terminate_on_close=False)
+        async with Client(transport, read_timeout_seconds=30) as client:
             yield client
+
+
+def ms_of(value) -> float:
+    """Broker timestamp (epoch ms number, digit string or ISO 8601) -> epoch ms."""
+    if isinstance(value, str) and not value.strip().isdigit():
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp() * 1000
+    return float(value)
+
+
+def iso(ms: float) -> str:
+    return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _types(prop: dict | None) -> set[str]:
+    prop = prop or {}
+    t = prop.get("type")
+    out = set(t) if isinstance(t, list) else {t} if t else set()
+    for alt in prop.get("anyOf") or prop.get("oneOf") or []:
+        out |= _types(alt)
+    return out
+
+
+def _lost_session(exc: BaseException) -> bool:
+    """A JSON-RPC answer "Session not found" (HTTP 404 on the session id): the server rejected the request before
+    any tool ran, so it is safe to send it again on the same session — orders included (MCP spec, D-65)."""
+    from mcp.shared.exceptions import MCPError
+
+    return isinstance(exc, MCPError) and bool(LOST_SESSION_RE.search(str(exc.message)))
 
 
 def _classify(text: str) -> CTraderError:
@@ -116,6 +148,8 @@ class CTraderClient:
         self.clock = clock
         self.call_timeout = call_timeout
         self.tools: dict[str, set[str]] = {}
+        self.schemas: dict[str, dict[str, dict]] = {}  # tool -> input properties (types drive the argument encoding)
+        self.ms_text: set[str] = set()  # tools whose string timestamps are epoch-ms text rather than ISO 8601
         self.symbol_map: dict[str, dict] = {}
         self.digits: dict[str, int] = {}  # spot encoding, calibrated on a live bid
         self.bar_digits: dict[str, int] = {}  # trendbar encoding, calibrated on the last close
@@ -140,7 +174,7 @@ class CTraderClient:
     async def set_credentials(self, url: str, token: str) -> None:
         """Hot-swap (Telegram /ctrader): the next call connects with the new token and re-reads its tools."""
         self.url, self.token = url, token
-        self.tools = {}
+        self.tools, self.schemas, self.ms_text = {}, {}, set()
         self.auth_error_since = None
 
     async def close(self) -> None:
@@ -169,6 +203,40 @@ class CTraderClient:
             log.warning("%s: dropping undeclared fields %s", tool, dropped)
         return {k: v for k, v in args.items() if k in allowed}
 
+    def _fit_args(self, tool: str, args: dict) -> dict:
+        """Numbers the live schema declares as strings are sent as text; timestamps as ISO 8601 (or epoch-ms text
+        when the schema or the server says so). Railway log: get_trendbars rejected numeric timestamps (D-65)."""
+        props = self.schemas.get(tool) or {}
+        out = {}
+        for k, v in args.items():
+            types = _types(props.get(k))
+            if isinstance(v, int | float) and not isinstance(v, bool) and "string" in types \
+                    and not types & {"integer", "number"}:
+                v = (str(int(v)) if tool in self.ms_text else iso(v)) if k.endswith("Timestamp") else str(v)
+            out[k] = v
+        return out
+
+    def _load_tools(self, listed) -> None:
+        self.tools = {t.name: set((t.input_schema or {}).get("properties", {}).keys()) for t in listed.tools}
+        self.schemas = {t.name: dict((t.input_schema or {}).get("properties", {})) for t in listed.tools}
+        for tool, props in self.schemas.items():
+            for k, prop in props.items():
+                if k.endswith("Timestamp"):
+                    log.info("schema %s.%s: %s", tool, k, json.dumps(prop)[:200])
+                    hint = f"{prop.get('description', '')} {prop.get('format', '')}".lower()
+                    if "string" in _types(prop) and re.search(r"milli|epoch|unix", hint) and "iso" not in hint:
+                        self.ms_text.add(tool)
+
+    async def _request(self, fn):
+        """One request on the open session; a lost-session answer is resent on the same session (D-65)."""
+        for attempt in range(SESSION_RETRIES + 1):
+            try:
+                return await fn()
+            except Exception as exc:  # noqa: BLE001 — anything else is wrapped by the caller
+                if attempt >= SESSION_RETRIES or not _lost_session(exc):
+                    raise
+                await asyncio.sleep(BACKOFF_S * (attempt + 1))
+
     async def call(self, tool: str, args: dict | None = None) -> dict:
         args = dict(args or {})
         mutation = tool in MUTATIONS
@@ -185,12 +253,17 @@ class CTraderClient:
                     await asyncio.sleep(0.5 * 2**attempt)
                     attempt += 1
                     continue
+                if not mutation and "Timestamp" in str(exc) and tool not in self.ms_text \
+                        and any("string" in _types(p) for k, p in self.schemas.get(tool, {}).items()
+                                if k.endswith("Timestamp")):
+                    log.warning("%s rejected ISO timestamps; switching to epoch-ms text", tool)
+                    self.ms_text.add(tool)
+                    continue
                 raise
-            except TransportError as exc:
-                limit = SESSION_RETRIES if SESSION_RE.search(str(exc)) else READ_RETRIES
-                if mutation or attempt >= limit:
+            except TransportError:
+                if mutation or attempt >= READ_RETRIES:
                     raise
-                await asyncio.sleep(min(0.3 * 2**attempt, 3.0))
+                await asyncio.sleep(min(BACKOFF_S * 2**attempt, 3.0))
                 attempt += 1
 
     async def _call_once(self, tool: str, args: dict) -> dict:
@@ -200,12 +273,11 @@ class CTraderClient:
         try:
             async with asyncio.timeout(self.call_timeout), self.connector(self.url, self.token) as session:
                 if not self.tools:
-                    listed = await session.list_tools()
-                    self.tools = {t.name: set((t.input_schema or {}).get("properties", {}).keys())
-                                  for t in listed.tools}
+                    self._load_tools(await self._request(session.list_tools))
                 if tool not in self.tools:
                     raise ToolError(f"tool {tool} not offered by this connection (data-only token?)")
-                res = await session.call_tool(tool, self._filter_args(tool, args))
+                sent = self._fit_args(tool, self._filter_args(tool, args))
+                res = await self._request(lambda: session.call_tool(tool, sent))
         except BaseException as exc:
             if isinstance(exc, asyncio.CancelledError):
                 raise
@@ -282,7 +354,7 @@ class CTraderClient:
         out = {}
         for name, p in (await self.raw_spot([n for n in names if n in self.digits])).items():
             d = self.digits[name]
-            ts = float(p.get("timestamp") or now * 1000) / 1000
+            ts = ms_of(p.get("timestamp") or now * 1000) / 1000
             self.skew_s = ts - now
             out[name] = Quote(to_display(p["bid"], d), to_display(p["ask"], d), ts, now)
         return out
@@ -322,9 +394,7 @@ def parse_trendbar(row: dict[str, Any], digits: int) -> Bar | None:
         ts = row.get("timestamp")
         if ts is None and row.get("utcTimestampInMinutes") is not None:
             ts = int(row["utcTimestampInMinutes"]) * 60_000
-        if isinstance(ts, str) and not ts.strip().isdigit():
-            ts = datetime.fromisoformat(ts.strip().replace("Z", "+00:00")).timestamp() * 1000
-        ts = int(float(ts)) // 1000
+        ts = int(ms_of(ts)) // 1000
         if "open" in row and "close" in row:
             o, h, l, c = (float(row[k]) for k in ("open", "high", "low", "close"))
         else:
