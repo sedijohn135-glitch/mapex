@@ -295,3 +295,15 @@ referenced from the code (`DECISIONS D-xx`). GEM1/GEM2 in `docs/source/` stay th
   map (map 20) arrived silently. It is one message per map id (deduplicated): bias, each zone with reach (near/far)
   and TP1/TP2, when the map expires, and how many repairs MAPEX made. This is the only non-entry, non-critical
   message. CLAUDE.md's Telegram rule is updated to match.
+- **D-76** The owner's automatic flow: Gemini Spark Schedules run the owner's ICT Sniper V13 on MAPEX data and send the
+  setup to MAPEX, which executes. MAPEX itself stays as it is: JSON intake, GEM2 100/100, every guard.
+  - `spark-skill/mapex-v13/SKILL.md` is shaped like the Live Validator's Spark skill (name/description front matter,
+    "run end to end, never ask" trigger). It holds the MAPEX rules and then V13 verbatim (`docs/source/V13.md`).
+  - The rules replace only V13's data and time source (`gem1_inputs`, `mapex_candles`, snapshot clock instead of
+    `user_time_v0` and screenshots), its missing M3/M2 (M1 is used) and its hand-off.
+  - The V13 sniper setup maps onto MAPEX's map JSON:
+    - the Kurthi landing zone becomes CHAIN_A (`zone_low`/`zone_high`, `anchor_price` = sniper entry, TP1/TP2);
+    - the hunted liquidity becomes the registry root;
+    - TP3 becomes `final_lrlr_objective`;
+    - the confidence becomes `validation_score` / `generating_lps`.
+  - A test checks that the skill ends with V13 verbatim and that this JSON shape is accepted with no repairs.

@@ -217,3 +217,21 @@ def test_gem_instructions_carry_gem1_the_tools_and_the_ict_clock():
     for name, start, end in ICT_TIMES:
         if not name.startswith("Macro"):
             assert f"{start}–{end.replace('24:00', '00:00')}" in text, name
+
+
+def test_spark_v13_skill_carries_v13_and_its_setup_json_is_accepted(mkt):
+    root = Path(__file__).resolve().parent.parent
+    skill = (root / "spark-skill/mapex-v13/SKILL.md").read_text()
+    assert skill.startswith("---\nname: mapex-v13\n") and skill.endswith((root / "docs/source/V13.md").read_text())
+    assert all(t in skill for t in ("gem1_inputs", "mapex_candles", "submit_gem1_map", "executor_status"))
+    bars, now, price, atr = mkt  # the §3 shape of a V13 BUY sniper: zone below price, hunted SSL below the zone
+    v13 = {"strategic_bias": "buy", "final_lrlr_objective": price + 30,
+           "liquidity_registry": [{"id": "LIQ_1", "type": "EQL", "timeframe": "M15", "price_level": price - 9,
+                                   "lps": 80, "status": "UNTOUCHED"}],
+           "key_zones": [{"id": "CHAIN_A", "direction": "buy", "timeframe": "M15", "zone_type": "FVG",
+                          "zone_low": price - 6, "zone_high": price - 3, "anchor_price": price - 5,
+                          "generating_liquidity_id": "LIQ_1", "generating_lps": 80, "validation_score": 80,
+                          "suggested_pearl": "Turtle Soup Deferred", "tp1": price + 8, "tp2": price + 18}]}
+    res = accept(json.dumps(v13), "XAUUSD", config.load({}), bars, price, now)
+    z = res.json["key_zones"][0]
+    assert z["generating_liquidity_id"] == "LIQ_1" and not res.meta["warnings"]  # taken as sent, no repairs
