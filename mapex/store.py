@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS order_log(
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY, ts INTEGER, symbol TEXT, zone_key TEXT, chain TEXT, state TEXT, output TEXT,
   p1 INTEGER, p2 INTEGER, p3 INTEGER, p4 INTEGER, reason TEXT, data TEXT);
+CREATE TABLE IF NOT EXISTS vsetups(
+  id TEXT PRIMARY KEY, symbol TEXT NOT NULL, direction TEXT, state TEXT NOT NULL, payload TEXT NOT NULL,
+  computed TEXT NOT NULL, reason TEXT, created_at INTEGER, updated_at INTEGER);
 CREATE TABLE IF NOT EXISTS outbox(
   id INTEGER PRIMARY KEY, dedupe TEXT UNIQUE NOT NULL, created_at INTEGER, text TEXT NOT NULL, sent_at INTEGER,
   attempts INTEGER NOT NULL DEFAULT 0, critical INTEGER NOT NULL DEFAULT 0);
