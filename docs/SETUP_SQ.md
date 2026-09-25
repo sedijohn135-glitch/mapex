@@ -107,6 +107,21 @@ Në çdo hap: `/replay XAUUSD 30` të tregon sa tregti do të kishte hapur siste
 ⚠️ Adresa me `?key=` është çelës: mos e ndaj me askënd. Nëse të rrjedh, ndrysho `MCP_TOKEN` te Railway dhe te
 Gemini. Gemini nuk mund të hapë, ndryshojë apo mbyllë tregti: ai vetëm dërgon hartën.
 
+### 6b) Automatik me Spark: V13 → MAPEX (pa të shtypur asgjë)
+1. Gemini → **Settings → Connected Apps → Custom apps for Spark**: sigurohu që **Mapex** është i lidhur (e njëjta
+   adresë `https://<domeni>/mcp?key=<MCP_TOKEN>`).
+2. Spark → **Skills**: ngarko `spark-skill/mapex-v13/SKILL.md`. Përmban V13 të plotë dhe lidhjen me MAPEX. Nëse del
+   shumë i gjatë, ngarko vetëm pjesën para `# ICT SNIPER V13 (law)` dhe V13-n (`docs/source/V13.md`) si skill tjetër.
+3. Provë me dorë në Spark: shkruaj `MAP XAUUSD`. Spark merr të dhënat, bën V13, dhe nëse del setup i vlefshëm ia
+   dërgon MAPEX-it. Në Telegram vjen "🗺️ Harta e Gemini u pranua".
+4. Spark → **Schedules → Create manually**, tre herë, çdo ditë pune (ora e Tiranës):
+   - `07:30` — tekst: `MAP XAUUSD` (para London 08:00–11:00)
+   - `14:00` — tekst: `MAP XAUUSD` (para New York 14:30–17:00)
+   - `19:30` — tekst: `MAP XAUUSD` (para PM Silver Bullet 20:00–21:00)
+   Për BTCUSD shto të njëjtat me `MAP BTCUSD`.
+5. MAPEX e ndjek zonën dhe hyn vetë vetëm kur GEM2 del 100/100 brenda dritares së vet; SL gjithmonë, loti nga
+   Railway.
+
 ## 7) Probleme të shpeshta
 | Shenja | Zgjidhja |
 |---|---|

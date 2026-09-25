@@ -29,6 +29,7 @@ mapex/
   mcp_api.py     /mcp (MCP_TOKEN): mapex_snapshot, mapex_candles, submit_gem1_map, executor_status
 docs/            SETUP_SQ, RULES_SQ, SPEC, DECISIONS, TRACEABILITY, source/GEM1.md, source/GEM2.md,
                  gemini/GEM_INSTRUCTIONS.md (the Gemini Gem's Instructions: rules + ICT clock + GEM1)
+spark-skill/     mapex-v13/SKILL.md: Gemini Spark skill — the owner's ICT Sniper V13 on MAPEX data, sent to MAPEX
 ```
 
 ## Run
